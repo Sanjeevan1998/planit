@@ -1,13 +1,13 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Search, Calendar, UtensilsCrossed, Map } from "lucide-react";
+import { Search, Calendar, UtensilsCrossed, Map, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Types ────────────────────────────────────────────────────────
 
 interface BuildingSpinnerProps {
-  step: "building" | "adding_food" | "finalizing" | "suggesting";
+  step: "building" | "polishing" | "adding_food" | "finalizing" | "suggesting";
 }
 
 // ── Step config ──────────────────────────────────────────────────
@@ -33,6 +33,13 @@ const STEP_CONFIG = {
     subtext: "Sourcing non-tourist restaurants from local guides",
     color: "text-emerald-400",
     ringColor: "border-emerald-500",
+  },
+  polishing: {
+    icon: CheckCircle2,
+    message: "Making sure your trip flows perfectly...",
+    subtext: "Checking travel times, sequences, and logic",
+    color: "text-amber-400",
+    ringColor: "border-amber-500",
   },
   finalizing: {
     icon: Map,
@@ -109,6 +116,7 @@ export function BuildingSpinner({ step }: BuildingSpinnerProps) {
             }}
             className={cn("w-1.5 h-1.5 rounded-full", {
               "bg-violet-400": step === "suggesting" || step === "building",
+              "bg-amber-400": step === "polishing",
               "bg-emerald-400": step === "adding_food",
               "bg-blue-400": step === "finalizing",
             })}

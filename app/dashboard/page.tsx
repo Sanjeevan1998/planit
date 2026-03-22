@@ -67,6 +67,7 @@ type FlowStep =
   | "suggesting"    // fetching suggestions (spinner)
   | "picking"       // user picks activities (ActivityPicker)
   | "building"      // building itinerary (spinner)
+  | "polishing"     // review agent checking logical consistency (spinner)
   | "conflict"      // conflict resolver
   | "food_ask"      // food decision step
   | "food_pick"     // user picks specific food
@@ -202,6 +203,22 @@ export default function DashboardPage() {
     });
   };
 
+  // ── Shared: run the review agent (non-fatal, after food is complete) ──
+  // Called AFTER food is added/skipped so the agent sees the full itinerary.
+  const runReview = async (itineraryId: string) => {
+    setFlowStep("polishing");
+    try {
+      await fetch("/api/itinerary/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itinerary_id: itineraryId, suggestions: tripSuggestions }),
+      });
+      await loadItinerary();
+    } catch {
+      // Review is non-fatal — carry on regardless
+    }
+  };
+
   const handleBuildTrip = async () => {
     if (selectedActivityIds.size === 0) {
       toast.error("Pick at least one activity first");
@@ -289,6 +306,8 @@ export default function DashboardPage() {
   const handleFoodDecision = async (choice: "ai" | "pick" | "skip") => {
     if (isFoodFetching) return; // guard against double-click
     if (choice === "skip") {
+      // Review without food — still run the check so the activity schedule is sane
+      if (pendingItineraryId) await runReview(pendingItineraryId);
       setFlowStep("done");
       toast.success("Your itinerary is ready!");
       return;
@@ -329,7 +348,7 @@ export default function DashboardPage() {
             itinerary_id: pendingItineraryId,
             food_suggestions: foodData.food,
             ai_pick: true,
-            city_days: cityDays,
+            city_date_ranges: cityDateRanges,
           }),
         });
         if (!res.ok) {
@@ -344,6 +363,7 @@ export default function DashboardPage() {
       }
       setIsFoodFetching(false);
       setLoadingOverlayMsg(null);
+      if (pendingItineraryId) await runReview(pendingItineraryId);
       setFlowStep("done");
       return;
     }
@@ -397,6 +417,7 @@ export default function DashboardPage() {
           itinerary_id: pendingItineraryId,
           selected_food_ids: Array.from(selectedFoodIds),
           food_suggestions: foodSuggestions,
+          city_date_ranges: cityDateRanges,
         }),
       });
       if (!res.ok) {
@@ -410,6 +431,7 @@ export default function DashboardPage() {
       toast.error("Couldn't add food");
     }
     setLoadingOverlayMsg(null);
+    if (pendingItineraryId) await runReview(pendingItineraryId);
     setFlowStep("done");
   };
 
@@ -549,6 +571,14 @@ export default function DashboardPage() {
     }
   }
 
+  // Per-city date ranges for food scheduling
+  const cityDateRanges: Record<string, { from: string; to: string }> = {};
+  if (tripSuggestions) {
+    for (const c of tripSuggestions.cities) {
+      cityDateRanges[c.city] = { from: c.date_range.from, to: c.date_range.to };
+    }
+  }
+
   // ── Center panel content ────────────────────────────────────
   const isInFlow = flowStep !== "idle" && flowStep !== "done";
   const showTimeline = flowStep === "idle" || flowStep === "done";
@@ -557,6 +587,7 @@ export default function DashboardPage() {
   const planningStepForBadge =
     flowStep === "picking" || flowStep === "suggesting" ? "picking"
     : flowStep === "conflict" ? "conflict"
+    : flowStep === "building" || flowStep === "polishing" ? "picking"
     : flowStep === "food_ask" || flowStep === "food_pick" || flowStep === "adding_food" ? "food"
     : "done";
 
@@ -626,6 +657,13 @@ export default function DashboardPage() {
             <LoadingOverlay message={loadingOverlayMsg ?? "Scheduling your activities..."} />
           </div>
         ) : null;
+
+      case "polishing":
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <BuildingSpinner step="polishing" />
+          </div>
+        );
 
       case "conflict":
         return (
@@ -735,6 +773,7 @@ export default function DashboardPage() {
               onToggle={handleToggleNode}
               onFinalize={handleFinalize}
               isFinalizing={isFinalizing}
+              cityRanges={tripSuggestions?.cities}
             />
           </div>
         ) : (

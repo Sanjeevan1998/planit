@@ -27,6 +27,110 @@ import {
 import { cn } from "@/lib/utils";
 import type { Itinerary, ItineraryNode, BookingLink, TransportOption } from "@/types";
 
+// ── CityTransitionBanner ──────────────────────────────────────
+
+interface TransportOptionResult {
+  mode: "train" | "bus" | "flight";
+  operator: string;
+  departure: string;
+  arrival: string;
+  duration_minutes: number;
+  price_estimate: string;
+  booking_url: string;
+  notes: string;
+}
+
+function CityTransitionBanner({ fromCity, toCity, travelDate }: { fromCity: string; toCity: string; travelDate: string }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [options, setOptions] = useState<TransportOptionResult[] | null>(null);
+  const [recommended, setRecommended] = useState("");
+
+  const fetch_options = async () => {
+    if (options) { setOpen((v) => !v); return; }
+    setOpen(true);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/itinerary/transport", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from_city: fromCity, to_city: toCity, travel_date: travelDate }),
+      });
+      const data = await res.json();
+      setOptions(data.options ?? []);
+      setRecommended(data.recommended ?? "");
+    } catch {
+      setOptions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const MODE_ICONS: Record<string, string> = { train: "🚂", bus: "🚌", flight: "✈️" };
+
+  return (
+    <div className="my-3 mx-1">
+      <button
+        onClick={fetch_options}
+        className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl border border-blue-500/30 bg-blue-500/8 hover:bg-blue-500/15 transition-all duration-200 group"
+      >
+        <span className="text-lg">🗺️</span>
+        <div className="flex-1 text-left">
+          <p className="text-sm font-semibold text-blue-300">Travel: {fromCity} → {toCity}</p>
+          <p className="text-xs text-blue-400/70">Tap to find trains, buses & flights</p>
+        </div>
+        <Train className="w-4 h-4 text-blue-400/60 group-hover:text-blue-400 transition-colors" />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 rounded-2xl border border-zinc-800/60 bg-zinc-900/60 p-3 space-y-2">
+              {loading && (
+                <div className="flex items-center gap-2 py-2 text-zinc-500 text-xs">
+                  <Zap className="w-3 h-3 animate-pulse" />
+                  Finding real transport options...
+                </div>
+              )}
+              {!loading && options?.length === 0 && (
+                <p className="text-xs text-zinc-500 py-2">No options found — try searching manually.</p>
+              )}
+              {!loading && recommended && (
+                <p className="text-xs text-blue-300/80 italic mb-2">💡 {recommended}</p>
+              )}
+              {!loading && options?.map((opt, i) => (
+                <div key={i} className="flex items-start gap-3 p-2.5 rounded-xl bg-zinc-800/40 border border-zinc-700/30">
+                  <span className="text-base flex-shrink-0 mt-0.5">{MODE_ICONS[opt.mode] ?? "🚌"}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-semibold text-zinc-200">{opt.operator}</span>
+                      <span className="text-xs text-zinc-500">{opt.departure} → {opt.arrival}</span>
+                      <span className="text-xs text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded-full">{opt.price_estimate}</span>
+                    </div>
+                    {opt.notes && <p className="text-xs text-zinc-500 mt-0.5">{opt.notes}</p>}
+                  </div>
+                  {opt.booking_url && (
+                    <a href={opt.booking_url} target="_blank" rel="noopener noreferrer"
+                      className="flex-shrink-0 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                      Book <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ============================================================
 // BranchingTimeline — The core "Decision Tree" UI
 // ============================================================
@@ -44,6 +148,8 @@ interface BranchingTimelineProps {
   onFinalize?: () => void;
   isFinalizing?: boolean;
   className?: string;
+  /** City date ranges for showing inter-city travel banners */
+  cityRanges?: Array<{ city: string; date_range: { from: string; to: string } }>;
 }
 
 const NODE_TYPE_ICONS: Record<string, string> = {
@@ -582,7 +688,20 @@ export function BranchingTimeline({
   onFinalize,
   isFinalizing = false,
   className,
+  cityRanges,
 }: BranchingTimelineProps) {
+  // Build a lookup: YYYY-MM-DD → city name
+  const dateToCityMap = new Map<string, string>();
+  if (cityRanges) {
+    for (const c of cityRanges) {
+      const cur = new Date(c.date_range.from + "T00:00:00");
+      const end = new Date(c.date_range.to + "T00:00:00");
+      while (cur <= end) {
+        dateToCityMap.set(cur.toISOString().split("T")[0], c.city);
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+  }
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   // Prefer the IANA timezone stored on the itinerary (set at creation time).
   // Fall back to keyword-based lookup for itineraries created before this field existed.
@@ -652,14 +771,28 @@ export function BranchingTimeline({
       {sortedDates.map((dateKey, dayIndex) => {
         const dayNodes = dateGroups.get(dateKey)!;
         const dayLabel = formatDayHeader(dateKey, dayIndex);
+        const prevDateKey = dayIndex > 0 ? sortedDates[dayIndex - 1] : null;
+        const currentCity = dateToCityMap.get(dateKey);
+        const prevCity = prevDateKey ? dateToCityMap.get(prevDateKey) : null;
+        const isCityTransition = currentCity && prevCity && currentCity !== prevCity;
 
         return (
           <div key={dateKey} className="space-y-1">
+            {isCityTransition && prevCity && currentCity && prevDateKey && (
+              <CityTransitionBanner
+                fromCity={prevCity}
+                toCity={currentCity}
+                travelDate={dateKey}
+              />
+            )}
             {isMultiDay && (
               <div className="flex items-center gap-2 py-2 px-1 mt-4 first:mt-0">
                 <Calendar className="w-3.5 h-3.5 text-violet-400/70" />
                 <span className="text-xs font-semibold text-violet-400/80 uppercase tracking-wider">
                   Day {dayIndex + 1} · {dayLabel}
+                  {currentCity && cityRanges && cityRanges.length > 1 && (
+                    <span className="ml-2 text-zinc-500 normal-case font-normal">· {currentCity}</span>
+                  )}
                 </span>
                 <div className="flex-1 h-px bg-zinc-800/60" />
               </div>

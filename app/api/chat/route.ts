@@ -5,7 +5,7 @@ import { getAllMemories, storeBatchMemories, updateProfileVector } from "@/lib/s
 import { getActiveItinerary } from "@/lib/supabase/itinerary";
 import { logger } from "@/lib/logger";
 import type { ChatRequest, ChatResponse, UserMemory } from "@/types";
-import { detectIntent, suggestActivities, buildUserContextFromRaw } from "@/lib/langgraph/planner";
+import { detectIntent, suggestActivities, buildUserContextFromRaw, extractMemoriesFromMessage } from "@/lib/langgraph/planner";
 
 export async function POST(req: NextRequest) {
   const t0 = Date.now();
@@ -32,6 +32,14 @@ export async function POST(req: NextRequest) {
     // Multi-step flow: intercept ALL planning requests
     const chatIntent = detectIntent(message);
     if (chatIntent === "plan_day") {
+      // Extract and save any preference signals from this message (fire-and-forget — doesn't block planning)
+      extractMemoriesFromMessage(message).then((updates) => {
+        if (updates.length) {
+          logger.info("Chat API", `Saving ${updates.length} preference(s) from planning message`);
+          storeBatchMemories(user_id, updates as Parameters<typeof storeBatchMemories>[1]).catch(console.error);
+        }
+      }).catch(console.error);
+
       const suggestContext = buildUserContextFromRaw({
         name: userProfile?.name,
         wheelchair: accessPrefs?.uses_wheelchair,

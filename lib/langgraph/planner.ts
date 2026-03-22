@@ -353,7 +353,7 @@ export function buildUserContextFromRaw(opts: {
   ].filter(Boolean) as string[];
   if (access.length) lines.push(`Accessibility: ${access.join("; ")}`);
   if (opts.memories?.length)
-    lines.push(`Preferences: ${opts.memories.slice(0, 15).map((m) => `${m.key}=${m.value}`).join(", ")}`);
+    lines.push(`Preferences (incorporate naturally — do NOT repeat any single preference excessively, ensure variety): ${opts.memories.slice(0, 15).map((m) => `${m.key}=${m.value}`).join(", ")}`);
   return lines.join("\n");
 }
 
@@ -745,6 +745,48 @@ Be helpful, warm, and concise. Reference their preferences naturally.`;
   }
 }
 
+// ── Extract preference memories from any user message ────────
+// Lightweight, no search — called fire-and-forget on every message
+// so preferences like "I like to party" are always captured.
+export async function extractMemoriesFromMessage(
+  message: string
+): Promise<Array<{ category: string; key: string; value: string }>> {
+  const genAI = getGenAI();
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+  const prompt = `Extract any personal preferences, personality traits, or travel interests from this message.
+Only extract clear, reusable signals — ignore destination names and trip logistics (those are not preferences).
+
+Use ONLY these category values (no others):
+- "likes" — things the user enjoys or wants more of
+- "dislikes" — things the user dislikes or wants to avoid
+- "vibe" — travel style, energy, or atmosphere preferences
+- "budget" — spending habits or budget level
+- "activity" — activity type preferences
+- "accommodation" — where they like to stay
+- "transport" — how they prefer to travel
+
+Examples:
+- "I like to party" → { category: "vibe", key: "travel_vibe", value: "nightlife and partying" }
+- "I hate museums" → { category: "dislikes", key: "dislikes_museums", value: "museums" }
+- "I love street food" → { category: "likes", key: "food_interest", value: "street food" }
+- "I'm on a tight budget" → { category: "budget", key: "budget_style", value: "budget-conscious" }
+- "I love hiking" → { category: "activity", key: "activity_preference", value: "hiking and outdoors" }
+
+Message: "${message}"
+
+If there are extractable preferences, return JSON: { "memory_updates": [{ "category": "...", "key": "...", "value": "..." }] }
+If there is nothing worth remembering, return: { "memory_updates": [] }`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const parsed = extractJSON(result.response.text()) as { memory_updates?: Array<{ category: string; key: string; value: string }> } | null;
+    return parsed?.memory_updates ?? [];
+  } catch {
+    return [];
+  }
+}
+
 // ── Finalize: schedule selected activities + insert transport nodes ─
 //
 // Approach: ask Gemini only for (a) a schedule (id → times) and (b) new transport nodes.
@@ -941,9 +983,11 @@ Search: "[city] events [month year]", "[city] concerts [dates]", "[city] festiva
 Include up to 5 real events per city with exact dates and times.
 
 STEP 3 — FIND GENERAL ACTIVITIES:
-For each city find 10–15 must-do activities (NOT tourist traps, mix of iconic + hidden gems).
+For each city find activities based on how many days are allocated there: 3 days or less → 12 activities, 4–5 days → 18 activities, 6+ days → 25 activities. Mix of iconic + hidden gems. NOT tourist traps.
 Categories: cultural, outdoor, shopping, nightlife, wellness, experience, hidden_gem.
 Include real addresses, accurate lat/lng, accessibility info, and booking links.
+
+⚠️ STRICT RULE — DO NOT include restaurants, cafes, ramen shops, food stalls, bars that are primarily for eating, or any establishment whose main purpose is serving food as activities. Food and dining are handled entirely by a separate food step. Activities must be experiences, attractions, landmarks, markets (cultural/shopping only), nightlife clubs/bars, or outdoor spaces.
 
 Return ONLY valid JSON, no markdown fences:
 {
@@ -1106,6 +1150,20 @@ export async function buildFromSelections(
   ) + 1;
   const dateSchedule = buildDateSchedule(suggestions.start_date, numDays, tzOffset);
 
+  // Current-time awareness: if the trip starts today, don't schedule in the past
+  const nowUtc = new Date();
+  const todayStr = nowUtc.toISOString().split("T")[0];
+  const isStartingToday = suggestions.start_date === todayStr;
+  // Round up to next half-hour + 30 min buffer so the first activity has prep time
+  const nowMins = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+  const earliestMins = Math.ceil((nowMins + 30) / 30) * 30; // next 30-min boundary
+  const earliestH = String(Math.floor(earliestMins / 60) % 24).padStart(2, "0");
+  const earliestM = String(earliestMins % 60).padStart(2, "0");
+  const earliestStart = `${earliestH}:${earliestM}`;
+  const timeRule = isStartingToday
+    ? `- It is currently ${earliestH}:${earliestM} UTC on ${todayStr}. On ${todayStr}, schedule NOTHING before ${earliestStart} (earlier slots have already passed). Start the first activity at ${earliestStart} or later.`
+    : `- Start times no earlier than 09:00`;
+
   // Build a city → allowed dates set for hard enforcement
   const cityDateMap = new Map<string, { from: string; to: string }>();
   for (const c of suggestions.cities) {
@@ -1160,7 +1218,7 @@ Rules:
 - FIXED events must keep their exact date and start time
 - NEVER schedule an activity outside its city's allowed dates — this is the #1 rule
 - Distribute activities evenly across the available days for each city (aim for 3–5 per day)
-- Start times no earlier than 09:00, use 2-digit hours (e.g. "09:00" not "9:00")
+${timeRule}, use 2-digit hours (e.g. "09:00" not "9:00")
 - Between consecutive activities on the same day, add a short transport entry
 - If gap between activities is >50min, add one filler (nearby walk/viewpoint/market)
 - Do NOT add meals
@@ -1236,10 +1294,28 @@ Return ONLY valid JSON, no markdown:
     const actMap = new Map(selected.map((a) => [a.id, a]));
     const schedMap = new Map(parsed.schedule.map((s) => [s.id, s]));
 
+    // Build allowed-date sets per city for post-processing validation
+    const cityAllowedDates = new Map<string, Set<string>>();
+    for (const c of suggestions.cities) {
+      const dates = new Set<string>();
+      const cur = new Date(c.date_range.from + "T00:00:00");
+      const end = new Date(c.date_range.to + "T00:00:00");
+      while (cur <= end) { dates.add(toDateStr(cur)); cur.setDate(cur.getDate() + 1); }
+      cityAllowedDates.set(c.city, dates);
+    }
+
     const activityNodes: ItineraryNode[] = [];
     for (const sched of parsed.schedule) {
       const src = actMap.get(sched.id);
       if (!src) continue;
+
+      // Post-processing: drop any activity Gemini placed on the wrong city's date
+      const allowedDates = cityAllowedDates.get(src.city);
+      if (allowedDates && !allowedDates.has(sched.date)) {
+        logger.warn("Planner", `Dropped "${src.title}" (${src.city}) — Gemini placed it on ${sched.date} which is not in allowedDates`);
+        continue;
+      }
+
       activityNodes.push({
         id: sched.id,
         itinerary_id: "",
@@ -1421,6 +1497,140 @@ function buildFallbackNodes(
   });
 }
 
+// ── Itinerary review agent: logic + feasibility check ────────
+//
+// Takes the raw scheduled nodes (after buildFromSelections) and runs a
+// Gemini reasoning pass that detects and fixes:
+//   • Cross-city teleportation (Prague 14:00 → Berlin 15:30 with no travel time)
+//   • Activities scheduled in the past
+//   • Hard time overlaps between non-transport nodes
+//   • Logically weird timings (nightclub at 9 AM, etc.)
+//
+// Returns a minimal patch: { removals, reschedules } to apply to the DB.
+
+export interface ReviewPatch {
+  removals: string[];
+  reschedules: Array<{ id: string; new_start: string; new_end: string }>;
+  notes: string[];
+}
+
+export async function reviewAndFixItinerary(
+  nodes: Array<{
+    id: string;
+    title: string;
+    city?: string;       // derived from date range — may be wrong for misplaced meals
+    address?: string;    // physical address — ground truth for cross-city detection
+    type: string;
+    start_time: string;
+    end_time: string;
+  }>,
+  suggestions: TripSuggestions,
+): Promise<ReviewPatch> {
+  if (!nodes.length) return { removals: [], reschedules: [], notes: [] };
+
+  const genAI = getGenAI();
+  // Use 2.5 Pro for the final review — complex multi-city logic requires deeper reasoning
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+
+  const nowIso = new Date().toISOString();
+
+  // City schedule with explicit allowed dates per city
+  const cityContext = suggestions.cities.map((c) => {
+    const dates: string[] = [];
+    const cur = new Date(c.date_range.from + "T00:00:00");
+    const end = new Date(c.date_range.to + "T00:00:00");
+    while (cur <= end) { dates.push(toDateStr(cur)); cur.setDate(cur.getDate() + 1); }
+    return `  ${c.city}: dates ${dates.join(", ")}`;
+  }).join("\n");
+
+  // Consecutive city pairs — Gemini knows real-world travel times
+  const cityPairs = suggestions.cities
+    .slice(0, -1)
+    .map((c, i) => {
+      const next = suggestions.cities[i + 1];
+      return `  ${c.city} → ${next.city}: last ${c.city} date is ${c.date_range.to}, first ${next.city} date is ${next.date_range.from}. Minimum travel gap between them is 3–8 hours depending on mode. The EARLIEST a ${next.city} activity can start is after arrival from ${c.city}.`;
+    })
+    .join("\n");
+
+  // Rich node list including address so cross-city meals can be detected
+  const nodeList = nodes
+    .filter((n) => n.type !== "transport")
+    .map((n) => {
+      const addr = n.address ? ` [${n.address.slice(0, 60)}]` : "";
+      return `${n.id} | ${n.type.padEnd(10)} | scheduled-city:${n.city ?? "?"} | ${n.start_time.slice(0, 16)} → ${n.end_time.slice(0, 16)} | ${n.title}${addr}`;
+    })
+    .join("\n");
+
+  const prompt = `You are a senior travel planner doing a final quality review of a multi-city itinerary. Your job is to find and fix every logical impossibility. Be thorough — this is the last check before the user sees the plan.
+
+Current UTC time: ${nowIso}
+
+CITY SCHEDULE (each city's allowed dates):
+${cityContext}
+
+INTER-CITY TRAVEL CONTEXT:
+${cityPairs || "  (single-city trip)"}
+
+FULL SCHEDULE (id | type | scheduled-city | start→end | title [address]):
+${nodeList}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ISSUES TO FIND AND FIX (check all of these):
+
+1. WRONG-CITY MEALS — A meal/restaurant that is physically in City A (look at its address) but scheduled on a City B date. REMOVE these — the user can't teleport to eat.
+
+2. TELEPORTATION — An activity in City B starts before there has been enough time to travel from City A. Cross-city travel takes 3–8 hours minimum. If the gap is less, REMOVE the impossibly-early City B node.
+
+3. ACTIVITIES IN THE PAST — Any node with start_time before ${nowIso} UTC. RESCHEDULE to the next available slot on the same day (or the following day if no slots remain today).
+
+4. HARD TIME OVERLAPS — Two non-transport nodes on the same day that overlap by more than 15 minutes. RESCHEDULE the second one to start 15 min after the first ends.
+
+5. THREE DINNERS / IMPOSSIBLE EATING — More than one meal of the same type in a 3-hour window on the same day. REMOVE the extras (keep the best-rated / first one).
+
+6. NIGHTLIFE TIMING — A club/nightlife/party activity starting before 20:00. RESCHEDULE to 21:00 or later.
+
+7. BREAKFAST TIMING — A breakfast starting after 11:00 AM or before 06:00 AM. RESCHEDULE to 07:30–10:00 window.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RULES:
+- Check every item against every rule above. Be systematic.
+- For reschedules: keep new times on the same date as the original unless the whole day is impossible.
+- For impossible cross-city meals: always REMOVE (do not try to reschedule to a different city).
+- Do not invent, rename, or modify activities beyond their time.
+- If a node has no issues, leave it out of your response entirely.
+- new_start and new_end must be "YYYY-MM-DDTHH:MM" format (no seconds, no timezone).
+
+Return ONLY valid JSON, no markdown:
+{
+  "removals": ["id_of_node_to_remove"],
+  "reschedules": [
+    { "id": "node_id", "new_start": "YYYY-MM-DDTHH:MM", "new_end": "YYYY-MM-DDTHH:MM" }
+  ],
+  "notes": ["One plain-English sentence per fix describing what was wrong and what was done"]
+}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text();
+    const parsed = extractJSON(raw) as ReviewPatch | null;
+    if (!parsed) {
+      logger.warn("Planner", "reviewAndFixItinerary returned unparseable response — skipping review");
+      return { removals: [], reschedules: [], notes: [] };
+    }
+    const removals = Array.isArray(parsed.removals) ? parsed.removals : [];
+    const reschedules = Array.isArray(parsed.reschedules) ? parsed.reschedules : [];
+    const notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+    logger.info(
+      "Planner",
+      `reviewAndFixItinerary — ${removals.length} removals, ${reschedules.length} reschedules. Notes: ${notes.join("; ") || "none"}`
+    );
+    return { removals, reschedules, notes };
+  } catch (err) {
+    logger.error("Planner", "reviewAndFixItinerary failed — skipping review", (err as Error).message);
+    return { removals: [], reschedules: [], notes: [] };
+  }
+}
+
 // ── Food: find authentic local restaurants per city ──────────
 export async function findFoodPlaces(
   cities: string[],
@@ -1507,4 +1717,68 @@ Return ONLY valid JSON, no markdown:
     logger.error("Planner", "findFoodPlaces failed", (err as Error).message);
     return { food: [] };
   }
+}
+
+// ── Inter-city travel: find real transport options between cities ──
+export async function findInterCityTransport(
+  fromCity: string,
+  toCity: string,
+  travelDate: string, // YYYY-MM-DD
+): Promise<{
+  options: Array<{
+    mode: "train" | "bus" | "flight";
+    operator: string;
+    departure: string; // HH:MM
+    arrival: string;   // HH:MM
+    duration_minutes: number;
+    price_estimate: string;
+    booking_url: string;
+    notes: string;
+  }>;
+  recommended: string;
+}> {
+  const genAI = getGenAI();
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    tools: [{ googleSearch: {} }] as never[],
+  });
+
+  const prompt = `You are a travel assistant. Find real transport options from ${fromCity} to ${toCity} on ${travelDate}.
+
+Use Google Search:
+- "${fromCity} to ${toCity} train ${travelDate}"
+- "${fromCity} to ${toCity} direct train schedule"
+- "cheapest way ${fromCity} to ${toCity}"
+
+Find 2–3 real options (train preferred, then bus, then flight if applicable).
+For each option provide real departure and arrival times for ${travelDate}.
+
+Return ONLY valid JSON:
+{
+  "options": [
+    {
+      "mode": "train",
+      "operator": "Czech Railways (ČD)",
+      "departure": "14:30",
+      "arrival": "19:00",
+      "duration_minutes": 270,
+      "price_estimate": "€25–45",
+      "booking_url": "https://www.cd.cz",
+      "notes": "Direct train, book in advance for best price"
+    }
+  ],
+  "recommended": "One sentence recommendation on the best option and why"
+}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text();
+    const parsed = extractJSON(raw) as { options?: unknown[]; recommended?: string } | null;
+    if (parsed?.options?.length) {
+      return { options: parsed.options as never, recommended: parsed.recommended ?? "" };
+    }
+  } catch (err) {
+    logger.error("Planner", "findInterCityTransport failed", (err as Error).message);
+  }
+  return { options: [], recommended: "" };
 }
