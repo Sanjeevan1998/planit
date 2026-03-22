@@ -1,38 +1,206 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Quicksand:wght@400;500;600;700&display=swap');
+
 @import "tailwindcss";
 
+/* ── Tailwind v4 theme: design tokens ──────────────────────────────────────── */
+@theme {
+  /* Fonts */
+  --font-heading: 'Nunito', sans-serif;
+  --font-body: 'Quicksand', sans-serif;
+
+  /* Semantic colors (mapped from CSS vars defined in :root below) */
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* Kawaii palette tokens */
+  --color-peach: hsl(var(--peach));
+  --color-mint: hsl(var(--mint));
+  --color-baby-blue: hsl(var(--baby-blue));
+  --color-blush: hsl(var(--blush));
+  --color-sunflower: hsl(var(--sunflower));
+  --color-lavender: hsl(var(--lavender));
+
+  /* Sidebar */
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  /* Border radius */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-sm: calc(var(--radius) - 8px);
+  --radius-pill: 999px;
+
+  /* Shadows */
+  --shadow-pastel: 0 8px 32px rgba(201, 184, 255, 0.18);
+  --shadow-pastel-hover: 0 12px 40px rgba(201, 184, 255, 0.28);
+
+  /* Keyframes */
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-float-slow: float-slow 8s ease-in-out infinite;
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+/* ── CSS variable palette ──────────────────────────────────────────────────── */
 :root {
-  --background: #09090b;
-  --foreground: #fafafa;
+  --background: 30 60% 98%;
+  --foreground: 270 28% 23%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 270 28% 23%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 270 28% 23%;
+
+  --primary: 259 100% 85%;
+  --primary-foreground: 270 28% 23%;
+
+  --secondary: 153 62% 83%;
+  --secondary-foreground: 270 28% 23%;
+
+  --muted: 30 40% 94%;
+  --muted-foreground: 264 20% 36%;
+
+  --accent: 340 100% 86%;
+  --accent-foreground: 270 28% 23%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 259 60% 92%;
+  --input: 259 40% 90%;
+  --ring: 259 100% 85%;
+
+  --radius: 1.5rem;
+
+  --peach: 22 100% 87%;
+  --mint: 153 62% 83%;
+  --baby-blue: 212 100% 86%;
+  --blush: 340 100% 86%;
+  --sunflower: 44 100% 75%;
+  --lavender: 259 100% 85%;
+
+  --sidebar-background: 0 0% 100%;
+  --sidebar-foreground: 264 20% 36%;
+  --sidebar-primary: 259 100% 85%;
+  --sidebar-primary-foreground: 270 28% 23%;
+  --sidebar-accent: 259 40% 95%;
+  --sidebar-accent-foreground: 270 28% 23%;
+  --sidebar-border: 259 60% 92%;
+  --sidebar-ring: 259 100% 85%;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ── Keyframe definitions ──────────────────────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50%       { transform: translateY(-20px) rotate(3deg); }
 }
 
-html {
-  color-scheme: dark;
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50%       { transform: translateY(-12px) rotate(-2deg); }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
+@keyframes fade-up {
+  0%   { opacity: 0; transform: translateY(16px); filter: blur(4px); }
+  100% { opacity: 1; transform: translateY(0); filter: blur(0px); }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+@keyframes accordion-down {
+  from { height: 0; }
+  to   { height: var(--radix-accordion-content-height); }
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to   { height: 0; }
 }
-::-webkit-scrollbar-thumb {
-  background: #3f3f46;
-  border-radius: 4px;
+
+/* ── Base styles ───────────────────────────────────────────────────────────── */
+@layer base {
+  * { box-sizing: border-box; }
+
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Quicksand', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Nunito', sans-serif;
+    color: hsl(var(--foreground));
+    text-wrap: balance;
+  }
+
+  p { text-wrap: pretty; overflow-wrap: break-word; }
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+
+/* ── Utility classes ───────────────────────────────────────────────────────── */
+@layer utilities {
+  .glass-card {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(16px);
+    border: 1px solid hsl(var(--border));
+    box-shadow: 0 8px 32px rgba(201, 184, 255, 0.18);
+    border-radius: var(--radius);
+  }
+
+  .glass-card-hover {
+    transition: box-shadow 0.3s ease-out, transform 0.3s ease-out;
+  }
+
+  .glass-card-hover:hover {
+    box-shadow: 0 12px 40px rgba(201, 184, 255, 0.28);
+  }
+
+  .kawaii-pill {
+    border-radius: 999px;
+    padding: 0.5rem 1.5rem;
+    font-weight: 600;
+    font-family: 'Nunito', sans-serif;
+  }
+
+  .rounded-pill { border-radius: 999px; }
+
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+  .animate-float { animation: float 6s ease-in-out infinite; }
+  .animate-float-slow { animation: float-slow 8s ease-in-out infinite; }
+  .animate-fade-up { animation: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+  .font-heading { font-family: 'Nunito', sans-serif; }
+  .font-body    { font-family: 'Quicksand', sans-serif; }
 }
+
+/* ── Custom scrollbar ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary)); }

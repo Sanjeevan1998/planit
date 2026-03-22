@@ -1,0 +1,106 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Quicksand:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 30 60% 98%;
+    --foreground: 270 28% 23%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 270 28% 23%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 270 28% 23%;
+
+    --primary: 259 100% 85%;
+    --primary-foreground: 270 28% 23%;
+
+    --secondary: 153 62% 83%;
+    --secondary-foreground: 270 28% 23%;
+
+    --muted: 30 40% 94%;
+    --muted-foreground: 264 20% 36%;
+
+    --accent: 340 100% 86%;
+    --accent-foreground: 270 28% 23%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 259 60% 92%;
+    --input: 259 40% 90%;
+    --ring: 259 100% 85%;
+
+    --radius: 1.5rem;
+
+    /* Custom kawaii tokens */
+    --peach: 22 100% 87%;
+    --mint: 153 62% 83%;
+    --baby-blue: 212 100% 86%;
+    --blush: 340 100% 86%;
+    --sunflower: 44 100% 75%;
+    --lavender: 259 100% 85%;
+
+    --shadow-pastel: 0 8px 32px rgba(201, 184, 255, 0.18);
+    --shadow-pastel-hover: 0 12px 40px rgba(201, 184, 255, 0.28);
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 264 20% 36%;
+    --sidebar-primary: 259 100% 85%;
+    --sidebar-primary-foreground: 270 28% 23%;
+    --sidebar-accent: 259 40% 95%;
+    --sidebar-accent-foreground: 270 28% 23%;
+    --sidebar-border: 259 60% 92%;
+    --sidebar-ring: 259 100% 85%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Quicksand', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Nunito', sans-serif;
+    @apply text-foreground;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+    overflow-wrap: break-word;
+  }
+}
+
+@layer utilities {
+  .glass-card {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(16px);
+    border: 1px solid hsl(var(--border));
+    box-shadow: var(--shadow-pastel);
+    border-radius: var(--radius);
+  }
+
+  .glass-card-hover {
+    transition: box-shadow 0.3s ease-out, transform 0.3s ease-out;
+  }
+
+  .glass-card-hover:hover {
+    box-shadow: var(--shadow-pastel-hover);
+  }
+
+  .kawaii-pill {
+    border-radius: 999px;
+    padding: 0.5rem 1.5rem;
+    font-weight: 600;
+    font-family: 'Nunito', sans-serif;
+  }
+}

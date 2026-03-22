@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "maps.googleapis.com" },
       { protocol: "https", hostname: "lh3.googleusercontent.com" },
       { protocol: "https", hostname: "openweathermap.org" },
+      { protocol: "https", hostname: "images.unsplash.com" },
     ],
   },
   // Ensure LangGraph runs server-side only
