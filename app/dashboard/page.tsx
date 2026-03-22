@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { BranchingTimeline } from "@/components/itinerary/BranchingTimeline";
 import { ChatPanel } from "@/components/layout/ChatPanel";
-import { VoiceOrb } from "@/components/voice/VoiceOrb";
 import { AccessibilityPanel } from "@/components/accessibility/AccessibilityPanel";
 import { BudgetSlider } from "@/components/itinerary/BudgetSlider";
 import { TransportPanel } from "@/components/itinerary/TransportPanel";
@@ -27,6 +26,7 @@ import { FoodAskStep, FoodPicker } from "@/components/planning/FoodStep";
 import { BuildingSpinner } from "@/components/planning/BuildingSpinner";
 import { PlanningSteps } from "@/components/planning/PlanningSteps";
 import { MemoryPanel } from "@/components/settings/MemoryPanel";
+import { usePlanitStore } from "@/store/planit";
 import { cn } from "@/lib/utils";
 import type {
   Itinerary,
@@ -113,6 +113,21 @@ export default function DashboardPage() {
   const [transportOptions, setTransportOptions] = useState<TransportOption[]>([]);
   const [pivotAlert, setPivotAlert] = useState<string | null>(null);
 
+  // ── Zustand store bridge ─────────────────────────────────────
+  // Voice reads these; dashboard writes them.
+  const setGlobalItinerary     = usePlanitStore((s) => s.setItinerary);
+  const setGlobalSuggestions   = usePlanitStore((s) => s.setTripSuggestions);
+  const setGlobalSelectedIds   = usePlanitStore((s) => s.setSelectedActivityIds);
+  // Voice writes these; dashboard reacts and clears them.
+  const pendingChatResponse    = usePlanitStore((s) => s.pendingChatResponse);
+  const pendingVoiceAction     = usePlanitStore((s) => s.pendingVoiceAction);
+  const dispatchChatResponse   = usePlanitStore((s) => s.dispatchChatResponse);
+  const dispatchVoiceAction    = usePlanitStore((s) => s.dispatchVoiceAction);
+
+  useEffect(() => { setGlobalItinerary(itinerary); },         [itinerary, setGlobalItinerary]);
+  useEffect(() => { setGlobalSuggestions(tripSuggestions); }, [tripSuggestions, setGlobalSuggestions]);
+  useEffect(() => { setGlobalSelectedIds(selectedActivityIds); }, [selectedActivityIds, setGlobalSelectedIds]);
+
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
     checkMobile();
@@ -192,6 +207,50 @@ export default function DashboardPage() {
       setSidePanel("transport");
     }
   };
+
+  // ── Voice bridge: react to signals from GlobalVoiceAssistant ─
+  // When voice dispatches a ChatResponse (e.g. trip suggestions), run it
+  // through the same handler the text chat uses, then clear it.
+  useEffect(() => {
+    if (!pendingChatResponse) return;
+    handleChatUpdate(pendingChatResponse);
+    dispatchChatResponse(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatResponse]);
+
+  // When voice dispatches a phase-transition action, execute it exactly
+  // as if the user had clicked the corresponding button, then clear it.
+  useEffect(() => {
+    if (!pendingVoiceAction) return;
+    dispatchVoiceAction(null); // clear first to avoid double-fire
+
+    switch (pendingVoiceAction.type) {
+      case "build_all_activities":
+        // Select every suggested activity then build.
+        if (tripSuggestions) {
+          const allIds = new Set(
+            tripSuggestions.cities.flatMap((c) =>
+              c.activities.map((a) => a.id)
+            )
+          );
+          setSelectedActivityIds(allIds);
+          // handleBuildTrip reads selectedActivityIds from state, so we
+          // need to wait one tick for the state update to land.
+          setTimeout(() => handleBuildTrip(), 0);
+        }
+        break;
+      case "build_selected_activities":
+        handleBuildTrip();
+        break;
+      case "add_food_ai":
+        handleFoodDecision("ai");
+        break;
+      case "skip_food":
+        handleFoodDecision("skip");
+        break;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVoiceAction]);
 
   // ── Activity picker handlers ────────────────────────────────
   const handleToggleActivity = (id: string) => {
@@ -1027,17 +1086,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Voice Orb — anchored to bottom-right of the chat sidebar */}
-      <VoiceOrb
-        userId={DEMO_USER_ID}
-        onTranscript={() => {}}
-        onResponse={(text) => {
-          if (text.toLowerCase().includes("itinerary") || text.toLowerCase().includes("plan")) {
-            setTimeout(loadItinerary, 2000);
-          }
-        }}
-        className={isMobile ? "bottom-16 right-4" : "bottom-6 left-[264px] right-auto"}
-      />
     </div>
   );
 }

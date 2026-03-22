@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "react-hot-toast";
+import { GlobalVoiceAssistant } from "@/components/voice/GlobalVoiceAssistant";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -30,6 +31,10 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-zinc-950 text-zinc-100 min-h-screen`}
       >
         {children}
+        {/* GlobalVoiceAssistant is mounted here so the WebSocket session
+            persists across route changes. It reads itinerary state from
+            the Zustand store written by the dashboard. */}
+        <GlobalVoiceAssistant />
         <Toaster
           position="top-center"
           toastOptions={{

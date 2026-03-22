@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     model: "gemini-2.5-flash-native-audio-latest",
     api_key: apiKey, // Only expose in dev; in production use a session token approach
     config: {
-      response_modalities: ["AUDIO", "TEXT"],
+      response_modalities: ["AUDIO"],
       system_instruction: {
         parts: [
           {
