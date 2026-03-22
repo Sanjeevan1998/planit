@@ -66,6 +66,15 @@
 }
 
 /* ── CSS variable palette ──────────────────────────────────────────────────── */
+/*
+ * Force light color-scheme so Turbopack/LightningCSS never bakes the OS dark
+ * theme into the compiled output. The kawaii UI is always light.
+ */
+:root,
+html {
+  color-scheme: light !important;
+}
+
 :root {
   --background: 30 60% 98%;
   --foreground: 270 28% 23%;
@@ -204,3 +213,17 @@
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary)); }
+
+/*
+ * Re-assert light palette at the very end so it beats any dark-mode variables
+ * that Turbopack/LightningCSS may have injected above (e.g. --background:#09090b).
+ */
+:root {
+  color-scheme: light;
+  --background: 30 60% 98% !important;
+  --foreground: 270 28% 23% !important;
+}
+html {
+  color-scheme: light !important;
+  background: hsl(30 60% 98%);
+}
