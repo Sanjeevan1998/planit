@@ -1,3 +1,10 @@
+Demo : https://ernesto-rubied-callie.ngrok-free.dev/dashboard
+
+You can use the voice option as well. But the APIs take time since we couldn't optimize. In our demo video, we show how the flow works using text, but it should work with the live mode as well.
+
+
+
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
