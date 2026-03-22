@@ -5,6 +5,7 @@ import { getAllMemories, storeBatchMemories, updateProfileVector } from "@/lib/s
 import { getActiveItinerary } from "@/lib/supabase/itinerary";
 import { logger } from "@/lib/logger";
 import type { ChatRequest, ChatResponse, UserMemory } from "@/types";
+import { detectIntent, suggestActivities, buildUserContextFromRaw } from "@/lib/langgraph/planner";
 
 export async function POST(req: NextRequest) {
   const t0 = Date.now();
@@ -27,6 +28,25 @@ export async function POST(req: NextRequest) {
 
     const memories = await getAllMemories(user_id);
     logger.debug("Chat API", `Loaded ${memories.length} memories for user`);
+
+    // Multi-step flow: intercept ALL planning requests
+    const chatIntent = detectIntent(message);
+    if (chatIntent === "plan_day") {
+      const suggestContext = buildUserContextFromRaw({
+        name: userProfile?.name,
+        wheelchair: accessPrefs?.uses_wheelchair,
+        elevator: accessPrefs?.requires_elevator,
+        lowSensory: accessPrefs?.low_sensory,
+        allergies: accessPrefs?.allergies,
+        memories: memories.map((m) => ({ key: m.key, value: m.value })),
+      });
+      const { suggestions, response: suggestResponse } = await suggestActivities(message, suggestContext);
+      return NextResponse.json({
+        response: suggestResponse,
+        mode: "suggest",
+        trip_suggestions: suggestions ?? undefined,
+      });
+    }
 
     let itinerary = null;
     if (itinerary_id) {

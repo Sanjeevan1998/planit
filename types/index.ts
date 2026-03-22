@@ -96,7 +96,7 @@ export type BudgetTier = "budget" | "mid-range" | "premium" | "luxury";
 export interface GeoLocation {
   lat: number;
   lng: number;
-  address?: string;
+  address: string;
   place_id?: string;
 }
 
@@ -339,6 +339,78 @@ export interface ChatResponse {
   memory_updates?: Partial<UserMemory>[];
   transport_options?: TransportOption[];
   suggestions?: string[];
+  trip_suggestions?: TripSuggestions;
+  mode?: "chat" | "suggest";
+}
+
+// ============================================================
+// Multi-Step Planning Flow Types
+// ============================================================
+
+export interface ActivitySuggestion {
+  id: string;
+  city: string;
+  type: NodeType;
+  title: string;
+  description: string;
+  location: GeoLocation;
+  duration_minutes: number;
+  budget_tier: BudgetTier;
+  budget_estimate: string;
+  tags: string[];
+  why_selected: string;
+  accessibility_verified: boolean;
+  accessibility_notes?: string;
+  booking_links: BookingLink[];
+  image_url?: string;
+  rating?: number;
+  // Event-specific fields (only when is_event === true)
+  is_event: boolean;
+  event_date?: string;     // "2026-04-01" — fixed calendar date
+  event_start?: string;    // "20:00" — fixed start time HH:MM
+  event_end?: string;      // "22:30"
+  ticket_links?: BookingLink[];
+}
+
+export interface CitySuggestions {
+  city: string;
+  date_range: { from: string; to: string };   // YYYY-MM-DD
+  activities: ActivitySuggestion[];           // flexible — no fixed date
+  events: ActivitySuggestion[];               // time-fixed events happening in date_range
+}
+
+export interface TripSuggestions {
+  trip_title: string;
+  destination: string;
+  start_date: string;  // YYYY-MM-DD
+  end_date: string;    // YYYY-MM-DD
+  cities: CitySuggestions[];
+}
+
+export interface FoodSuggestion {
+  id: string;
+  city: string;
+  title: string;
+  description: string;
+  location: GeoLocation;
+  meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+  cuisine: string;
+  must_try_dishes: string[];
+  why_authentic: string;
+  budget_tier: BudgetTier;
+  budget_estimate: string;
+  tags: string[];
+  accessibility_verified: boolean;
+  accessibility_notes?: string;
+  booking_links: BookingLink[];
+  rating?: number;
+  tips?: string;
+}
+
+export interface ActivityConflict {
+  date: string;        // "2026-04-03"
+  time_slot: string;   // "20:00–21:30"
+  options: ActivitySuggestion[];  // exactly 2 items
 }
 
 export interface PivotRequest {

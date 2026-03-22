@@ -9,9 +9,11 @@ import {
   Accessibility,
   DollarSign,
   RefreshCw,
-  ChevronLeft,
   ChevronRight,
   AlertTriangle,
+  ListChecks,
+  X,
+  Brain,
 } from "lucide-react";
 import { BranchingTimeline } from "@/components/itinerary/BranchingTimeline";
 import { ChatPanel } from "@/components/layout/ChatPanel";
@@ -19,26 +21,86 @@ import { VoiceOrb } from "@/components/voice/VoiceOrb";
 import { AccessibilityPanel } from "@/components/accessibility/AccessibilityPanel";
 import { BudgetSlider } from "@/components/itinerary/BudgetSlider";
 import { TransportPanel } from "@/components/itinerary/TransportPanel";
+import { ActivityPicker } from "@/components/planning/ActivityPicker";
+import { ConflictResolver } from "@/components/planning/ConflictResolver";
+import { FoodAskStep, FoodPicker } from "@/components/planning/FoodStep";
+import { BuildingSpinner } from "@/components/planning/BuildingSpinner";
+import { PlanningSteps } from "@/components/planning/PlanningSteps";
+import { MemoryPanel } from "@/components/settings/MemoryPanel";
 import { cn } from "@/lib/utils";
-import type { Itinerary, AccessibilityPreferences, BudgetTier, ChatResponse, TransportOption } from "@/types";
+import type {
+  Itinerary,
+  AccessibilityPreferences,
+  BudgetTier,
+  ChatResponse,
+  TransportOption,
+  TripSuggestions,
+  FoodSuggestion,
+  ActivityConflict,
+} from "@/types";
 import toast from "react-hot-toast";
 
 // ============================================================
 // Dashboard — The main Planit experience
-// Left: Chat + Voice | Center: Branching Timeline | Right: Panels
+// Left: Chat + Voice | Center: Multi-step or Timeline | Right: Panels
 // ============================================================
 
-// Demo user — in production this comes from Supabase auth
 const DEMO_USER_ID = "00000000-0000-0000-0000-000000000001";
 
-type SidePanel = "accessibility" | "budget" | "transport" | null;
+function LoadingOverlay({ message }: { message: string }) {
+  return (
+    <div className="absolute inset-0 bg-zinc-950/75 backdrop-blur-sm flex items-center justify-center z-20">
+      <div className="text-center">
+        <div className="w-10 h-10 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="text-sm font-semibold text-zinc-200">{message}</p>
+        <p className="text-xs text-zinc-500 mt-1">This may take a moment</p>
+      </div>
+    </div>
+  );
+}
+
+type SidePanel = "accessibility" | "budget" | "transport" | "memory" | null;
+
+// Multi-step planning flow
+type FlowStep =
+  | "idle"          // no active flow — shows itinerary or empty state
+  | "suggesting"    // fetching suggestions (spinner)
+  | "picking"       // user picks activities (ActivityPicker)
+  | "building"      // building itinerary (spinner)
+  | "conflict"      // conflict resolver
+  | "food_ask"      // food decision step
+  | "food_pick"     // user picks specific food
+  | "adding_food"   // adding food to itinerary (spinner)
+  | "done";         // shows final itinerary
 
 export default function DashboardPage() {
   const [itinerary, setItinerary] = useState<Itinerary | null>(null);
-  const [isLoadingItinerary, setIsLoadingItinerary] = useState(true);
+  const [isLoadingItinerary, setIsLoadingItinerary] = useState(false);
   const [sidePanel, setSidePanel] = useState<SidePanel>(null);
   const [activeTab, setActiveTab] = useState<"timeline" | "chat">("chat");
   const [isMobile, setIsMobile] = useState(false);
+
+  // Selection mode (customize existing itinerary)
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isFinalizing, setIsFinalizing] = useState(false);
+
+  // ── Multi-step flow state ───────────────────────────────────
+  const [flowStep, setFlowStep] = useState<FlowStep>("idle");
+  const [tripSuggestions, setTripSuggestions] = useState<TripSuggestions | null>(null);
+  const [selectedActivityIds, setSelectedActivityIds] = useState<Set<string>>(new Set());
+  const [pendingConflicts, setPendingConflicts] = useState<ActivityConflict[]>([]);
+  const [pendingItineraryId, setPendingItineraryId] = useState<string | null>(null);
+  const [foodSuggestions, setFoodSuggestions] = useState<FoodSuggestion[]>([]);
+  const [selectedFoodIds, setSelectedFoodIds] = useState<Set<string>>(new Set());
+  // Which screen triggered the build: "picker" stays on ActivityPicker, "conflict" stays on ConflictResolver
+  const [buildSource, setBuildSource] = useState<"picker" | "conflict">("picker");
+  // Which screen to keep visible while adding_food: "ask" = FoodAskStep, "pick" = FoodPicker
+  const [foodAddSource, setFoodAddSource] = useState<"ask" | "pick">("ask");
+  // Immediate loading state for the food ask step (fetching suggestions or adding)
+  const [isFoodFetching, setIsFoodFetching] = useState(false);
+  // Loading overlay message (shown on top of the current screen during long ops)
+  const [loadingOverlayMsg, setLoadingOverlayMsg] = useState<string | null>(null);
 
   const [accessPrefs, setAccessPrefs] = useState<Partial<AccessibilityPreferences>>({
     requires_elevator: false,
@@ -57,7 +119,6 @@ export default function DashboardPage() {
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // Load active itinerary
   const loadItinerary = useCallback(async () => {
     setIsLoadingItinerary(true);
     try {
@@ -73,14 +134,12 @@ export default function DashboardPage() {
     }
   }, []);
 
-  useEffect(() => {
-    loadItinerary();
-  }, [loadItinerary]);
+  // No auto-load on mount — page always starts fresh.
+  // loadItinerary is called after buildFromSelections saves a new itinerary.
 
-  // Poll for location-triggered pivots (in a real app, this is GPS-based)
+  // GPS pivot detection
   useEffect(() => {
     if (!navigator.geolocation) return;
-
     const watchId = navigator.geolocation.watchPosition(
       async (pos) => {
         if (!itinerary) return;
@@ -105,24 +164,283 @@ export default function DashboardPage() {
             setPivotAlert(data.voice_message);
           }
         } catch {
-          // Silently fail for background location
+          // Silently fail
         }
       },
       undefined,
       { enableHighAccuracy: false, timeout: 30000, maximumAge: 60000 }
     );
-
     return () => navigator.geolocation.clearWatch(watchId);
   }, [itinerary]);
 
+  // ── Chat update handler ─────────────────────────────────────
   const handleChatUpdate = (update: ChatResponse) => {
+    if (update.mode === "suggest" && update.trip_suggestions) {
+      // Switch to the multi-step planning flow
+      setTripSuggestions(update.trip_suggestions);
+      setSelectedActivityIds(new Set());
+      setFlowStep("picking");
+      setActiveTab("timeline"); // show center panel on mobile
+      return;
+    }
     if (update.itinerary_update) {
-      // Reload itinerary from server to get the persisted version
       loadItinerary();
     }
     if (update.transport_options?.length) {
       setTransportOptions(update.transport_options);
       setSidePanel("transport");
+    }
+  };
+
+  // ── Activity picker handlers ────────────────────────────────
+  const handleToggleActivity = (id: string) => {
+    setSelectedActivityIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBuildTrip = async () => {
+    if (selectedActivityIds.size === 0) {
+      toast.error("Pick at least one activity first");
+      return;
+    }
+    setBuildSource("picker");
+    setLoadingOverlayMsg("Scheduling your activities...");
+    setFlowStep("building");
+    try {
+      const res = await fetch("/api/itinerary/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          selected_ids: Array.from(selectedActivityIds),
+          suggestions: tripSuggestions,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Build failed");
+        setFlowStep("picking");
+        return;
+      }
+      if (data.conflicts?.length) {
+        setPendingConflicts(data.conflicts);
+        setLoadingOverlayMsg(null);
+        setFlowStep("conflict");
+      } else {
+        setPendingItineraryId(data.itinerary_id);
+        await loadItinerary();
+        setLoadingOverlayMsg(null);
+        setFlowStep("food_ask");
+      }
+    } catch {
+      toast.error("Couldn't build trip");
+      setLoadingOverlayMsg(null);
+      setFlowStep("picking");
+    }
+  };
+
+  // ── Conflict resolver handler ───────────────────────────────
+  const handleConflictResolved = async (winnerIds: string[]) => {
+    setBuildSource("conflict");
+    setLoadingOverlayMsg("Resolving conflicts and building...");
+    setFlowStep("building");
+    try {
+      // Remove conflict losers; keep winners
+      const loserIds = new Set<string>();
+      for (const conflict of pendingConflicts) {
+        for (const opt of conflict.options) {
+          if (!winnerIds.includes(opt.id)) loserIds.add(opt.id);
+        }
+      }
+      const resolvedIds = Array.from(selectedActivityIds).filter((id) => !loserIds.has(id));
+
+      const res = await fetch("/api/itinerary/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          selected_ids: resolvedIds,
+          suggestions: tripSuggestions,
+          resolved_conflicts: winnerIds,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Build failed");
+        setFlowStep("conflict");
+        return;
+      }
+      setPendingItineraryId(data.itinerary_id);
+      await loadItinerary();
+      setLoadingOverlayMsg(null);
+      setFlowStep("food_ask");
+    } catch {
+      toast.error("Couldn't resolve conflicts");
+      setLoadingOverlayMsg(null);
+      setFlowStep("conflict");
+    }
+  };
+
+  // ── Food decision handler ───────────────────────────────────
+  const handleFoodDecision = async (choice: "ai" | "pick" | "skip") => {
+    if (isFoodFetching) return; // guard against double-click
+    if (choice === "skip") {
+      setFlowStep("done");
+      toast.success("Your itinerary is ready!");
+      return;
+    }
+
+    // Show loading immediately so the user knows something is happening
+    setIsFoodFetching(true);
+
+    const cities = tripSuggestions?.cities.map((c) => c.city) ?? [];
+    const startDate = tripSuggestions?.start_date ?? new Date().toISOString().split("T")[0];
+    const endDate = tripSuggestions?.end_date ?? startDate;
+
+    if (choice === "ai") {
+      setFoodAddSource("ask");
+      setLoadingOverlayMsg("Finding the best local restaurants...");
+      setFlowStep("adding_food");
+      try {
+        // First fetch suggestions, then add — same flow as "pick" but auto-selects
+        const foodRes = await fetch("/api/itinerary/food", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: DEMO_USER_ID, cities, date_range: { from: startDate, to: endDate } }),
+        });
+        const foodData = await foodRes.json();
+        if (!foodRes.ok || !foodData.food?.length) {
+          toast.error("Couldn't find food suggestions");
+          setLoadingOverlayMsg(null);
+          setFlowStep("food_ask");
+          setIsFoodFetching(false);
+          return;
+        }
+        setLoadingOverlayMsg("Adding meals to your itinerary...");
+        const res = await fetch("/api/itinerary/add-food", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: DEMO_USER_ID,
+            itinerary_id: pendingItineraryId,
+            food_suggestions: foodData.food,
+            ai_pick: true,
+            num_days: numDays,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          toast.error(d.error || "Couldn't add food");
+        } else {
+          await loadItinerary();
+          toast.success("AI added meals to your plan!");
+        }
+      } catch {
+        toast.error("Couldn't add food");
+      }
+      setIsFoodFetching(false);
+      setLoadingOverlayMsg(null);
+      setFlowStep("done");
+      return;
+    }
+
+    // choice === "pick" — fetch suggestions then show picker
+    try {
+      const res = await fetch("/api/itinerary/food", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          cities,
+          date_range: { from: startDate, to: endDate },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Couldn't fetch food");
+        setIsFoodFetching(false);
+        setFlowStep("done");
+        return;
+      }
+      setFoodSuggestions(data.food ?? []);
+      setSelectedFoodIds(new Set());
+      setIsFoodFetching(false);
+      setFlowStep("food_pick");
+    } catch {
+      toast.error("Couldn't fetch food suggestions");
+      setIsFoodFetching(false);
+      setFlowStep("done");
+    }
+  };
+
+  // ── Food picker confirm handler ─────────────────────────────
+  const handleAddFood = async () => {
+    setFoodAddSource("pick");
+    setLoadingOverlayMsg("Adding your food picks...");
+    setFlowStep("adding_food");
+    try {
+      const res = await fetch("/api/itinerary/add-food", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          itinerary_id: pendingItineraryId,
+          selected_food_ids: Array.from(selectedFoodIds),
+          food_suggestions: foodSuggestions,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        toast.error(d.error || "Couldn't add food");
+      } else {
+        await loadItinerary();
+        toast.success("Meals added to your plan!");
+      }
+    } catch {
+      toast.error("Couldn't add food");
+    }
+    setLoadingOverlayMsg(null);
+    setFlowStep("done");
+  };
+
+  // ── Radio-group node toggle (selection mode) ────────────────
+  const handleToggleNode = (nodeId: string, slotNodeIds: string[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const wasSelected = prev.has(nodeId);
+      for (const id of slotNodeIds) next.delete(id);
+      if (!wasSelected) next.add(nodeId);
+      return next;
+    });
+  };
+
+  const handleFinalize = async () => {
+    if (!itinerary || selectedIds.size === 0) return;
+    setIsFinalizing(true);
+    try {
+      const res = await fetch("/api/itinerary/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          itinerary_id: itinerary.id,
+          selected_node_ids: Array.from(selectedIds),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error || "Finalization failed"); return; }
+      setItinerary(data.itinerary);
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+      toast.success("Plan finalized with transport options!");
+    } catch {
+      toast.error("Couldn't finalize plan");
+    } finally {
+      setIsFinalizing(false);
     }
   };
 
@@ -138,7 +456,6 @@ export default function DashboardPage() {
           node_id: nodeId,
         }),
       });
-      // Update local state optimistically
       setItinerary((prev) => {
         if (!prev) return prev;
         return {
@@ -153,15 +470,11 @@ export default function DashboardPage() {
   };
 
   const handleAccessSave = async () => {
-    try {
-      // In production, save to Supabase via API
-      toast.success("Accessibility preferences saved!");
-      setSidePanel(null);
-    } catch {
-      toast.error("Couldn't save preferences");
-    }
+    toast.success("Accessibility preferences saved!");
+    setSidePanel(null);
   };
 
+  // ── Side panel content ──────────────────────────────────────
   const sidePanelContent = {
     accessibility: (
       <div className="p-4">
@@ -208,7 +521,216 @@ export default function DashboardPage() {
         )}
       </div>
     ),
+    memory: <MemoryPanel userId={DEMO_USER_ID} />,
   };
+
+  // ── Helpers ─────────────────────────────────────────────────
+  const numDays = tripSuggestions
+    ? Math.max(1, Math.ceil(
+        (new Date(tripSuggestions.end_date + "T00:00:00").getTime() -
+          new Date(tripSuggestions.start_date + "T00:00:00").getTime()) /
+          (1000 * 60 * 60 * 24)
+      ) + 1)
+    : 1;
+
+  // ── Center panel content ────────────────────────────────────
+  const isInFlow = flowStep !== "idle" && flowStep !== "done";
+  const showTimeline = flowStep === "idle" || flowStep === "done";
+
+  // Derive PlanningSteps current step
+  const planningStepForBadge =
+    flowStep === "picking" || flowStep === "suggesting" ? "picking"
+    : flowStep === "conflict" ? "conflict"
+    : flowStep === "food_ask" || flowStep === "food_pick" || flowStep === "adding_food" ? "food"
+    : "done";
+
+  const hasConflicts = pendingConflicts.length > 0;
+
+  function renderCenterContent() {
+    switch (flowStep) {
+      case "suggesting":
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <BuildingSpinner step="suggesting" />
+          </div>
+        );
+
+      // Keep the picker on screen while building from the picker
+      case "picking":
+        return tripSuggestions ? (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="picking" hasConflicts={false} />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <ActivityPicker
+                suggestions={tripSuggestions}
+                selectedIds={selectedActivityIds}
+                onToggle={handleToggleActivity}
+                onBuildTrip={handleBuildTrip}
+                isBuilding={false}
+              />
+            </div>
+          </div>
+        ) : null;
+
+      // While building, keep whichever screen triggered it — overlay shows on top
+      case "building":
+        if (buildSource === "conflict") {
+          return (
+            <div className="flex-1 flex flex-col overflow-hidden relative">
+              <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+                <PlanningSteps currentStep="conflict" hasConflicts={true} />
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <ConflictResolver
+                  conflicts={pendingConflicts}
+                  onResolved={() => {}}
+                  isResolving={true}
+                />
+              </div>
+              <LoadingOverlay message={loadingOverlayMsg ?? "Building your trip..."} />
+            </div>
+          );
+        }
+        return tripSuggestions ? (
+          <div className="flex-1 flex flex-col overflow-hidden relative">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="picking" hasConflicts={false} />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <ActivityPicker
+                suggestions={tripSuggestions}
+                selectedIds={selectedActivityIds}
+                onToggle={() => {}}
+                onBuildTrip={() => {}}
+                isBuilding={true}
+              />
+            </div>
+            <LoadingOverlay message={loadingOverlayMsg ?? "Scheduling your activities..."} />
+          </div>
+        ) : null;
+
+      case "conflict":
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="conflict" hasConflicts={true} />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <ConflictResolver
+                conflicts={pendingConflicts}
+                onResolved={handleConflictResolved}
+                isResolving={false}
+              />
+            </div>
+          </div>
+        );
+
+      case "food_ask":
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="food" hasConflicts={hasConflicts} />
+            </div>
+            <div className="flex-1 overflow-y-auto flex items-center justify-center">
+              <FoodAskStep onDecide={handleFoodDecision} isLoading={isFoodFetching} />
+            </div>
+          </div>
+        );
+
+      case "food_pick":
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="food" hasConflicts={hasConflicts} />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <FoodPicker
+                suggestions={foodSuggestions}
+                selectedIds={selectedFoodIds}
+                onToggle={(id) => {
+                  setSelectedFoodIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  });
+                }}
+                onConfirm={handleAddFood}
+                isAdding={false}
+              />
+            </div>
+          </div>
+        );
+
+      // Keep the relevant food screen visible while saving — overlay shows on top
+      case "adding_food":
+        return foodAddSource === "pick" ? (
+          <div className="flex-1 flex flex-col overflow-hidden relative">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="food" hasConflicts={hasConflicts} />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <FoodPicker
+                suggestions={foodSuggestions}
+                selectedIds={selectedFoodIds}
+                onToggle={() => {}}
+                onConfirm={() => {}}
+                isAdding={true}
+              />
+            </div>
+            <LoadingOverlay message={loadingOverlayMsg ?? "Adding your food picks..."} />
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col overflow-hidden relative">
+            <div className="px-6 pt-4 pb-2 border-b border-zinc-900">
+              <PlanningSteps currentStep="food" hasConflicts={hasConflicts} />
+            </div>
+            <div className="flex-1 overflow-y-auto flex items-center justify-center">
+              <FoodAskStep onDecide={() => {}} isLoading={true} />
+            </div>
+            <LoadingOverlay message={loadingOverlayMsg ?? "Finding the best local restaurants..."} />
+          </div>
+        );
+
+      default:
+        // idle or done — show timeline
+        return isLoadingItinerary ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-sm text-zinc-600">Loading your itinerary...</p>
+            </div>
+          </div>
+        ) : itinerary ? (
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <BranchingTimeline
+              itinerary={itinerary}
+              onNodeSelect={handleNodeSelect}
+              onBranchSwitch={(nodeId, label) => {
+                toast.success(`Switched to path ${label}`);
+                handleNodeSelect(nodeId);
+              }}
+              selectionMode={selectionMode}
+              selectedIds={selectedIds}
+              onToggle={handleToggleNode}
+              onFinalize={handleFinalize}
+              isFinalizing={isFinalizing}
+            />
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+            <span className="text-5xl mb-4">🗾</span>
+            <h2 className="text-lg font-semibold text-zinc-300 mb-2">No itinerary yet</h2>
+            <p className="text-sm text-zinc-600 max-w-sm">
+              Start a conversation in the chat panel. Try: "Plan 3 days in Tokyo" or tap the
+              voice orb to talk.
+            </p>
+          </div>
+        );
+    }
+  }
 
   return (
     <div className="flex h-screen bg-zinc-950 overflow-hidden">
@@ -223,13 +745,24 @@ export default function DashboardPage() {
             : "w-80 shrink-0"
         )}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-4 border-b border-zinc-900">
           <div className="flex items-center gap-2">
             <span className="text-lg">🗺️</span>
             <span className="font-bold text-white">Planit</span>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => setSidePanel(sidePanel === "memory" ? null : "memory")}
+              className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                sidePanel === "memory"
+                  ? "bg-violet-600/20 text-violet-400"
+                  : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+              )}
+              title="AI Memory"
+            >
+              <Brain className="w-4 h-4" />
+            </button>
             <button
               onClick={() => setSidePanel(sidePanel === "accessibility" ? null : "accessibility")}
               className={cn(
@@ -257,7 +790,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Chat */}
         <ChatPanel
           userId={DEMO_USER_ID}
           itineraryId={itinerary?.id}
@@ -266,24 +798,65 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* ── Center: Branching Timeline ─────────────────────── */}
+      {/* ── Center: Multi-step flow or Timeline ────────────── */}
       <div
         className={cn(
           "flex-1 flex flex-col overflow-hidden",
           isMobile && activeTab !== "timeline" && "hidden"
         )}
       >
-        {/* Timeline header */}
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-900">
           <div>
             <h1 className="text-sm font-semibold text-white">
-              {itinerary?.title || "Your Itinerary"}
+              {isInFlow
+                ? tripSuggestions?.trip_title ?? "Planning your trip..."
+                : itinerary?.title ?? "Your Itinerary"}
             </h1>
             <p className="text-xs text-zinc-600 mt-0.5">
-              {itinerary?.destination || "Start a conversation to plan your trip"}
+              {isInFlow
+                ? tripSuggestions?.destination ?? ""
+                : itinerary?.destination ?? "Start a conversation to plan your trip"}
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Cancel flow button */}
+            {isInFlow && (
+              <button
+                onClick={() => {
+                  setFlowStep("idle");
+                  setTripSuggestions(null);
+                  setSelectedActivityIds(new Set());
+                  setPendingConflicts([]);
+                  setFoodSuggestions([]);
+                }}
+                className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-medium text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" /> Cancel
+              </button>
+            )}
+            {/* Customize button (timeline mode only) */}
+            {showTimeline && itinerary && (
+              <button
+                onClick={() => {
+                  setSelectionMode((v) => !v);
+                  setSelectedIds(new Set());
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-medium transition-colors",
+                  selectionMode
+                    ? "bg-violet-600/20 text-violet-400 border border-violet-500/30"
+                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                )}
+                title={selectionMode ? "Cancel selection" : "Select activities"}
+              >
+                {selectionMode ? (
+                  <><X className="w-3.5 h-3.5" /> Cancel</>
+                ) : (
+                  <><ListChecks className="w-3.5 h-3.5" /> Customize</>
+                )}
+              </button>
+            )}
             <button
               onClick={loadItinerary}
               className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
@@ -329,34 +902,9 @@ export default function DashboardPage() {
           )}
         </AnimatePresence>
 
-        {/* Timeline content */}
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          {isLoadingItinerary ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <p className="text-sm text-zinc-600">Loading your itinerary...</p>
-              </div>
-            </div>
-          ) : itinerary ? (
-            <BranchingTimeline
-              itinerary={itinerary}
-              onNodeSelect={handleNodeSelect}
-              onBranchSwitch={(nodeId, label) => {
-                toast.success(`Switched to path ${label}`);
-                handleNodeSelect(nodeId);
-              }}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <span className="text-5xl mb-4">🗾</span>
-              <h2 className="text-lg font-semibold text-zinc-300 mb-2">No itinerary yet</h2>
-              <p className="text-sm text-zinc-600 max-w-sm">
-                Start a conversation in the chat panel. Try: "Plan my Saturday in Tokyo" or tap
-                the voice orb to talk.
-              </p>
-            </div>
-          )}
+        {/* Main content area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {renderCenterContent()}
         </div>
       </div>
 
@@ -407,7 +955,7 @@ export default function DashboardPage() {
             )}
           >
             <Map className="w-5 h-5" />
-            Itinerary
+            {isInFlow ? "Planning" : "Itinerary"}
           </button>
           <button
             onClick={() => {
@@ -422,18 +970,16 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Voice Orb */}
+      {/* Voice Orb — anchored to bottom-right of the chat sidebar */}
       <VoiceOrb
         userId={DEMO_USER_ID}
-        onTranscript={(text) => {
-          // Transcript is shown in orb bubble
-        }}
+        onTranscript={() => {}}
         onResponse={(text) => {
-          // Response shown in orb bubble — also triggers itinerary refresh if needed
           if (text.toLowerCase().includes("itinerary") || text.toLowerCase().includes("plan")) {
             setTimeout(loadItinerary, 2000);
           }
         }}
+        className={isMobile ? "bottom-16 right-4" : "bottom-6 left-[264px] right-auto"}
       />
     </div>
   );

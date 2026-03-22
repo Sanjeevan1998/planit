@@ -82,7 +82,13 @@ export function ChatPanel({
 
       setMessages((prev) => [...prev, assistantMsg]);
 
-      if (data.itinerary_update || data.new_nodes?.length || data.transport_options?.length) {
+      // Notify parent for any meaningful update: itinerary changes, transport, or suggest mode
+      if (
+        data.itinerary_update ||
+        data.new_nodes?.length ||
+        data.transport_options?.length ||
+        data.trip_suggestions
+      ) {
         onItineraryUpdate?.(data);
       }
     } catch {
