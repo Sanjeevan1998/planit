@@ -310,7 +310,7 @@ export default function DashboardPage() {
         const foodRes = await fetch("/api/itinerary/food", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: DEMO_USER_ID, cities, date_range: { from: startDate, to: endDate } }),
+          body: JSON.stringify({ user_id: DEMO_USER_ID, cities, date_range: { from: startDate, to: endDate }, city_days: cityDays }),
         });
         const foodData = await foodRes.json();
         if (!foodRes.ok || !foodData.food?.length) {
@@ -329,7 +329,7 @@ export default function DashboardPage() {
             itinerary_id: pendingItineraryId,
             food_suggestions: foodData.food,
             ai_pick: true,
-            num_days: numDays,
+            city_days: cityDays,
           }),
         });
         if (!res.ok) {
@@ -349,6 +349,8 @@ export default function DashboardPage() {
     }
 
     // choice === "pick" — fetch suggestions then show picker
+    setLoadingOverlayMsg("Finding the best local restaurants...");
+    setFlowStep("adding_food"); // show overlay on top of FoodAskStep
     try {
       const res = await fetch("/api/itinerary/food", {
         method: "POST",
@@ -357,23 +359,27 @@ export default function DashboardPage() {
           user_id: DEMO_USER_ID,
           cities,
           date_range: { from: startDate, to: endDate },
+          city_days: cityDays,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.error || "Couldn't fetch food");
         setIsFoodFetching(false);
-        setFlowStep("done");
+        setLoadingOverlayMsg(null);
+        setFlowStep("food_ask");
         return;
       }
       setFoodSuggestions(data.food ?? []);
       setSelectedFoodIds(new Set());
       setIsFoodFetching(false);
+      setLoadingOverlayMsg(null);
       setFlowStep("food_pick");
     } catch {
       toast.error("Couldn't fetch food suggestions");
       setIsFoodFetching(false);
-      setFlowStep("done");
+      setLoadingOverlayMsg(null);
+      setFlowStep("food_ask");
     }
   };
 
@@ -533,6 +539,16 @@ export default function DashboardPage() {
       ) + 1)
     : 1;
 
+  // Per-city day counts derived from each city's date_range
+  const cityDays: Record<string, number> = {};
+  if (tripSuggestions) {
+    for (const c of tripSuggestions.cities) {
+      const from = new Date(c.date_range.from + "T00:00:00").getTime();
+      const to = new Date(c.date_range.to + "T00:00:00").getTime();
+      cityDays[c.city] = Math.max(1, Math.round((to - from) / 86400000) + 1);
+    }
+  }
+
   // ── Center panel content ────────────────────────────────────
   const isInFlow = flowStep !== "idle" && flowStep !== "done";
   const showTimeline = flowStep === "idle" || flowStep === "done";
@@ -649,6 +665,7 @@ export default function DashboardPage() {
               <FoodPicker
                 suggestions={foodSuggestions}
                 selectedIds={selectedFoodIds}
+                cityDays={cityDays}
                 onToggle={(id) => {
                   setSelectedFoodIds((prev) => {
                     const next = new Set(prev);
@@ -675,6 +692,7 @@ export default function DashboardPage() {
               <FoodPicker
                 suggestions={foodSuggestions}
                 selectedIds={selectedFoodIds}
+                cityDays={cityDays}
                 onToggle={() => {}}
                 onConfirm={() => {}}
                 isAdding={true}

@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { find as geoFind } from "geo-tz";
 import { logger, extractJSON } from "@/lib/logger";
 import type { PlanitStateType } from "./state";
 import type { Itinerary, ItineraryNode, BookingLink } from "@/types";
@@ -38,6 +39,228 @@ function toDateStr(d: Date): string {
   return d.toISOString().split("T")[0];
 }
 
+// ── Comprehensive destination → timezone map ─────────────────
+// Used by both detectPlanDuration (for UTC offset) and build routes (for IANA zone).
+const DEST_TIMEZONE_MAP: Array<[string, { offset: string; iana: string }]> = [
+  // East Asia
+  ["tokyo",          { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["japan",          { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["osaka",          { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["kyoto",          { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["hiroshima",      { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["sapporo",        { offset: "+09:00", iana: "Asia/Tokyo" }],
+  ["seoul",          { offset: "+09:00", iana: "Asia/Seoul" }],
+  ["korea",          { offset: "+09:00", iana: "Asia/Seoul" }],
+  ["beijing",        { offset: "+08:00", iana: "Asia/Shanghai" }],
+  ["shanghai",       { offset: "+08:00", iana: "Asia/Shanghai" }],
+  ["china",          { offset: "+08:00", iana: "Asia/Shanghai" }],
+  ["hong kong",      { offset: "+08:00", iana: "Asia/Hong_Kong" }],
+  ["taipei",         { offset: "+08:00", iana: "Asia/Taipei" }],
+  ["taiwan",         { offset: "+08:00", iana: "Asia/Taipei" }],
+  ["singapore",      { offset: "+08:00", iana: "Asia/Singapore" }],
+  ["kuala lumpur",   { offset: "+08:00", iana: "Asia/Kuala_Lumpur" }],
+  ["malaysia",       { offset: "+08:00", iana: "Asia/Kuala_Lumpur" }],
+  ["manila",         { offset: "+08:00", iana: "Asia/Manila" }],
+  ["philippines",    { offset: "+08:00", iana: "Asia/Manila" }],
+  // Southeast Asia
+  ["bali",           { offset: "+08:00", iana: "Asia/Makassar" }],
+  ["indonesia",      { offset: "+07:00", iana: "Asia/Jakarta" }],
+  ["jakarta",        { offset: "+07:00", iana: "Asia/Jakarta" }],
+  ["bangkok",        { offset: "+07:00", iana: "Asia/Bangkok" }],
+  ["thailand",       { offset: "+07:00", iana: "Asia/Bangkok" }],
+  ["chiang mai",     { offset: "+07:00", iana: "Asia/Bangkok" }],
+  ["ho chi minh",    { offset: "+07:00", iana: "Asia/Ho_Chi_Minh" }],
+  ["hanoi",          { offset: "+07:00", iana: "Asia/Ho_Chi_Minh" }],
+  ["vietnam",        { offset: "+07:00", iana: "Asia/Ho_Chi_Minh" }],
+  ["yangon",         { offset: "+06:30", iana: "Asia/Rangoon" }],
+  ["myanmar",        { offset: "+06:30", iana: "Asia/Rangoon" }],
+  ["dhaka",          { offset: "+06:00", iana: "Asia/Dhaka" }],
+  ["bangladesh",     { offset: "+06:00", iana: "Asia/Dhaka" }],
+  // South Asia
+  ["mumbai",         { offset: "+05:30", iana: "Asia/Kolkata" }],
+  ["delhi",          { offset: "+05:30", iana: "Asia/Kolkata" }],
+  ["india",          { offset: "+05:30", iana: "Asia/Kolkata" }],
+  ["bangalore",      { offset: "+05:30", iana: "Asia/Kolkata" }],
+  ["kolkata",        { offset: "+05:30", iana: "Asia/Kolkata" }],
+  ["colombo",        { offset: "+05:30", iana: "Asia/Colombo" }],
+  ["sri lanka",      { offset: "+05:30", iana: "Asia/Colombo" }],
+  ["kathmandu",      { offset: "+05:45", iana: "Asia/Kathmandu" }],
+  ["nepal",          { offset: "+05:45", iana: "Asia/Kathmandu" }],
+  ["karachi",        { offset: "+05:00", iana: "Asia/Karachi" }],
+  ["pakistan",       { offset: "+05:00", iana: "Asia/Karachi" }],
+  // Middle East
+  ["dubai",          { offset: "+04:00", iana: "Asia/Dubai" }],
+  ["uae",            { offset: "+04:00", iana: "Asia/Dubai" }],
+  ["abu dhabi",      { offset: "+04:00", iana: "Asia/Dubai" }],
+  ["riyadh",         { offset: "+03:00", iana: "Asia/Riyadh" }],
+  ["saudi arabia",   { offset: "+03:00", iana: "Asia/Riyadh" }],
+  ["tel aviv",       { offset: "+03:00", iana: "Asia/Jerusalem" }],
+  ["israel",         { offset: "+03:00", iana: "Asia/Jerusalem" }],
+  ["tehran",         { offset: "+03:30", iana: "Asia/Tehran" }],
+  ["iran",           { offset: "+03:30", iana: "Asia/Tehran" }],
+  ["istanbul",       { offset: "+03:00", iana: "Europe/Istanbul" }],
+  ["turkey",         { offset: "+03:00", iana: "Europe/Istanbul" }],
+  // Europe
+  ["london",         { offset: "+01:00", iana: "Europe/London" }],
+  ["uk",             { offset: "+01:00", iana: "Europe/London" }],
+  ["england",        { offset: "+01:00", iana: "Europe/London" }],
+  ["scotland",       { offset: "+01:00", iana: "Europe/London" }],
+  ["paris",          { offset: "+02:00", iana: "Europe/Paris" }],
+  ["france",         { offset: "+02:00", iana: "Europe/Paris" }],
+  ["berlin",         { offset: "+02:00", iana: "Europe/Berlin" }],
+  ["germany",        { offset: "+02:00", iana: "Europe/Berlin" }],
+  ["munich",         { offset: "+02:00", iana: "Europe/Berlin" }],
+  ["rome",           { offset: "+02:00", iana: "Europe/Rome" }],
+  ["italy",          { offset: "+02:00", iana: "Europe/Rome" }],
+  ["milan",          { offset: "+02:00", iana: "Europe/Rome" }],
+  ["florence",       { offset: "+02:00", iana: "Europe/Rome" }],
+  ["venice",         { offset: "+02:00", iana: "Europe/Rome" }],
+  ["madrid",         { offset: "+02:00", iana: "Europe/Madrid" }],
+  ["spain",          { offset: "+02:00", iana: "Europe/Madrid" }],
+  ["barcelona",      { offset: "+02:00", iana: "Europe/Madrid" }],
+  ["amsterdam",      { offset: "+02:00", iana: "Europe/Amsterdam" }],
+  ["netherlands",    { offset: "+02:00", iana: "Europe/Amsterdam" }],
+  ["prague",         { offset: "+02:00", iana: "Europe/Prague" }],
+  ["czech",          { offset: "+02:00", iana: "Europe/Prague" }],
+  ["vienna",         { offset: "+02:00", iana: "Europe/Vienna" }],
+  ["austria",        { offset: "+02:00", iana: "Europe/Vienna" }],
+  ["zurich",         { offset: "+02:00", iana: "Europe/Zurich" }],
+  ["switzerland",    { offset: "+02:00", iana: "Europe/Zurich" }],
+  ["lisbon",         { offset: "+01:00", iana: "Europe/Lisbon" }],
+  ["portugal",       { offset: "+01:00", iana: "Europe/Lisbon" }],
+  ["athens",         { offset: "+03:00", iana: "Europe/Athens" }],
+  ["greece",         { offset: "+03:00", iana: "Europe/Athens" }],
+  ["stockholm",      { offset: "+02:00", iana: "Europe/Stockholm" }],
+  ["sweden",         { offset: "+02:00", iana: "Europe/Stockholm" }],
+  ["oslo",           { offset: "+02:00", iana: "Europe/Oslo" }],
+  ["norway",         { offset: "+02:00", iana: "Europe/Oslo" }],
+  ["copenhagen",     { offset: "+02:00", iana: "Europe/Copenhagen" }],
+  ["denmark",        { offset: "+02:00", iana: "Europe/Copenhagen" }],
+  ["helsinki",       { offset: "+03:00", iana: "Europe/Helsinki" }],
+  ["finland",        { offset: "+03:00", iana: "Europe/Helsinki" }],
+  ["warsaw",         { offset: "+02:00", iana: "Europe/Warsaw" }],
+  ["poland",         { offset: "+02:00", iana: "Europe/Warsaw" }],
+  ["budapest",       { offset: "+02:00", iana: "Europe/Budapest" }],
+  ["hungary",        { offset: "+02:00", iana: "Europe/Budapest" }],
+  ["bucharest",      { offset: "+03:00", iana: "Europe/Bucharest" }],
+  ["romania",        { offset: "+03:00", iana: "Europe/Bucharest" }],
+  ["moscow",         { offset: "+03:00", iana: "Europe/Moscow" }],
+  ["russia",         { offset: "+03:00", iana: "Europe/Moscow" }],
+  ["kyiv",           { offset: "+03:00", iana: "Europe/Kiev" }],
+  ["ukraine",        { offset: "+03:00", iana: "Europe/Kiev" }],
+  ["brussels",       { offset: "+02:00", iana: "Europe/Brussels" }],
+  ["belgium",        { offset: "+02:00", iana: "Europe/Brussels" }],
+  ["dublin",         { offset: "+01:00", iana: "Europe/Dublin" }],
+  ["ireland",        { offset: "+01:00", iana: "Europe/Dublin" }],
+  ["edinburgh",      { offset: "+01:00", iana: "Europe/London" }],
+  // Africa
+  ["cairo",          { offset: "+02:00", iana: "Africa/Cairo" }],
+  ["egypt",          { offset: "+02:00", iana: "Africa/Cairo" }],
+  ["johannesburg",   { offset: "+02:00", iana: "Africa/Johannesburg" }],
+  ["south africa",   { offset: "+02:00", iana: "Africa/Johannesburg" }],
+  ["nairobi",        { offset: "+03:00", iana: "Africa/Nairobi" }],
+  ["kenya",          { offset: "+03:00", iana: "Africa/Nairobi" }],
+  ["marrakech",      { offset: "+01:00", iana: "Africa/Casablanca" }],
+  ["morocco",        { offset: "+01:00", iana: "Africa/Casablanca" }],
+  ["lagos",          { offset: "+01:00", iana: "Africa/Lagos" }],
+  ["nigeria",        { offset: "+01:00", iana: "Africa/Lagos" }],
+  // Americas
+  ["new york",       { offset: "-04:00", iana: "America/New_York" }],
+  ["nyc",            { offset: "-04:00", iana: "America/New_York" }],
+  ["boston",         { offset: "-04:00", iana: "America/New_York" }],
+  ["miami",          { offset: "-04:00", iana: "America/New_York" }],
+  ["washington",     { offset: "-04:00", iana: "America/New_York" }],
+  ["toronto",        { offset: "-04:00", iana: "America/Toronto" }],
+  ["canada",         { offset: "-04:00", iana: "America/Toronto" }],
+  ["montreal",       { offset: "-04:00", iana: "America/Toronto" }],
+  ["chicago",        { offset: "-05:00", iana: "America/Chicago" }],
+  ["dallas",         { offset: "-05:00", iana: "America/Chicago" }],
+  ["houston",        { offset: "-05:00", iana: "America/Chicago" }],
+  ["denver",         { offset: "-06:00", iana: "America/Denver" }],
+  ["los angeles",    { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["la ",            { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["san francisco",  { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["seattle",        { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["portland",       { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["las vegas",      { offset: "-07:00", iana: "America/Los_Angeles" }],
+  ["vancouver",      { offset: "-07:00", iana: "America/Vancouver" }],
+  ["mexico city",    { offset: "-05:00", iana: "America/Mexico_City" }],
+  ["mexico",         { offset: "-05:00", iana: "America/Mexico_City" }],
+  ["cancun",         { offset: "-05:00", iana: "America/Cancun" }],
+  ["buenos aires",   { offset: "-03:00", iana: "America/Argentina/Buenos_Aires" }],
+  ["argentina",      { offset: "-03:00", iana: "America/Argentina/Buenos_Aires" }],
+  ["sao paulo",      { offset: "-03:00", iana: "America/Sao_Paulo" }],
+  ["brazil",         { offset: "-03:00", iana: "America/Sao_Paulo" }],
+  ["rio de janeiro", { offset: "-03:00", iana: "America/Sao_Paulo" }],
+  ["lima",           { offset: "-05:00", iana: "America/Lima" }],
+  ["peru",           { offset: "-05:00", iana: "America/Lima" }],
+  ["bogota",         { offset: "-05:00", iana: "America/Bogota" }],
+  ["colombia",       { offset: "-05:00", iana: "America/Bogota" }],
+  ["santiago",       { offset: "-03:00", iana: "America/Santiago" }],
+  ["chile",          { offset: "-03:00", iana: "America/Santiago" }],
+  ["havana",         { offset: "-04:00", iana: "America/Havana" }],
+  ["cuba",           { offset: "-04:00", iana: "America/Havana" }],
+  // Oceania
+  ["sydney",         { offset: "+10:00", iana: "Australia/Sydney" }],
+  ["melbourne",      { offset: "+10:00", iana: "Australia/Sydney" }],
+  ["australia",      { offset: "+10:00", iana: "Australia/Sydney" }],
+  ["brisbane",       { offset: "+10:00", iana: "Australia/Brisbane" }],
+  ["perth",          { offset: "+08:00", iana: "Australia/Perth" }],
+  ["auckland",       { offset: "+12:00", iana: "Pacific/Auckland" }],
+  ["new zealand",    { offset: "+12:00", iana: "Pacific/Auckland" }],
+  ["honolulu",       { offset: "-10:00", iana: "Pacific/Honolulu" }],
+  ["hawaii",         { offset: "-10:00", iana: "Pacific/Honolulu" }],
+];
+
+// Look up destination timezone from any text (request string or destination name).
+// Returns { offset: "+09:00", iana: "Asia/Tokyo" }.
+// Defaults to UTC if no destination is recognised — avoids the JST-default bug.
+export function getDestTimezone(text: string): { offset: string; iana: string } {
+  const lower = text.toLowerCase();
+  for (const [key, tz] of DEST_TIMEZONE_MAP) {
+    if (lower.includes(key)) return tz;
+  }
+  return { offset: "+00:00", iana: "UTC" };
+}
+
+// Convert an IANA timezone name to a fixed UTC offset string ("±HH:MM").
+// Uses the Intl API — no extra packages needed.
+export function ianaToOffset(ianaTimezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: ianaTimezone,
+      timeZoneName: "shortOffset",
+    }).formatToParts(new Date());
+    const raw = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT+0";
+    // raw is like "GMT+9", "GMT-5", "GMT+5:30"
+    const match = raw.match(/GMT([+-])(\d+)(?::(\d+))?/);
+    if (!match) return "+00:00";
+    const sign = match[1];
+    const h = String(parseInt(match[2])).padStart(2, "0");
+    const m = String(match[3] ? parseInt(match[3]) : 0).padStart(2, "0");
+    return `${sign}${h}:${m}`;
+  } catch {
+    return "+00:00";
+  }
+}
+
+// Determine IANA timezone from GPS coordinates (via geo-tz).
+// Falls back to text-based lookup if coords are zero/missing.
+export function tzFromCoords(lat: number, lng: number, fallbackText = ""): { offset: string; iana: string } {
+  if (lat !== 0 || lng !== 0) {
+    try {
+      const zones = geoFind(lat, lng);
+      if (zones.length > 0) {
+        const iana = zones[0];
+        return { iana, offset: ianaToOffset(iana) };
+      }
+    } catch {
+      // fall through to text lookup
+    }
+  }
+  return getDestTimezone(fallbackText);
+}
+
 // Detect how many days the user is planning and what start date to use.
 // Returns { numDays, startDate } where startDate is YYYY-MM-DD.
 export function detectPlanDuration(request: string): { numDays: number; startDate: string; tzOffset: string } {
@@ -59,7 +282,7 @@ export function detectPlanDuration(request: string): { numDays: number; startDat
       }
     }
   }
-  numDays = Math.min(Math.max(numDays, 1), 7); // clamp 1–7
+  numDays = Math.min(Math.max(numDays, 1), 21); // clamp 1–21
 
   // Detect start date from day-of-week mentions
   let startDate = toDateStr(new Date()); // default: today
@@ -86,17 +309,7 @@ export function detectPlanDuration(request: string): { numDays: number; startDat
     if (numDays === 1) numDays = 5;
   }
 
-  // Detect timezone from destination keywords (expand as needed)
-  const tzOffset = text.includes("tokyo") || text.includes("japan") ? "+09:00"
-    : text.includes("london") || text.includes("uk") ? "+01:00"
-    : text.includes("new york") || text.includes("nyc") ? "-04:00"
-    : text.includes("paris") || text.includes("france") ? "+02:00"
-    : text.includes("los angeles") || text.includes("la ") ? "-07:00"
-    : text.includes("sydney") || text.includes("australia") ? "+10:00"
-    : text.includes("dubai") ? "+04:00"
-    : text.includes("singapore") || text.includes("bangkok") ? "+08:00"
-    : "+09:00"; // default to JST
-
+  const { offset: tzOffset } = getDestTimezone(text);
   return { numDays, startDate, tzOffset };
 }
 
@@ -681,14 +894,34 @@ export async function suggestActivities(
   const { numDays, startDate, tzOffset } = detectPlanDuration(request);
   const ticketPlatforms = getTicketPlatforms(tzOffset);
   const today = TODAY();
-  const multiCityHint = numDays <= 3 ? "1 city" : numDays <= 7 ? "2 cities" : "3–4 cities";
+  // Suggest number of cities: 1 per 2–3 days, capped at 5 for very long trips
+  const multiCityHint = numDays <= 2 ? "1 city"
+    : numDays <= 4 ? "1–2 cities"
+    : numDays <= 7 ? "2–3 cities"
+    : numDays <= 12 ? "3–4 cities"
+    : "4–5 cities";
 
   // Calculate end date
   const start = new Date(startDate);
   const endDate = toDateStr(new Date(start.getTime() + (numDays - 1) * 86400000));
 
+  // Extract strong vibe signals from the user's request
+  const requestLower = request.toLowerCase();
+  const vibeHints: string[] = [];
+  if (/party|club|nightlife|rave|techno|edm|bar hop|pub crawl|drinks|drinking/.test(requestLower))
+    vibeHints.push("⚠️ NIGHTLIFE-FIRST TRIP: User explicitly wants to party. Each city MUST include 3–5 nightlife activities (clubs, ruin bars, techno venues, bar streets, pub crawls). Evening slots should default to nightlife, not sightseeing. Prioritise cities/areas famous for nightlife.");
+  if (/food|eat|restaurant|cuisine|foodie|culinary/.test(requestLower))
+    vibeHints.push("FOOD-FOCUSED: Emphasise food tours, local markets, restaurant districts, and culinary experiences.");
+  if (/adventure|hike|outdoor|nature|trek|sport/.test(requestLower))
+    vibeHints.push("ADVENTURE-FOCUSED: Prioritise outdoor activities, hiking, sports, and active experiences.");
+  if (/art|museum|culture|history|heritage/.test(requestLower))
+    vibeHints.push("CULTURE-FOCUSED: Weight towards museums, galleries, historical sites, and cultural events.");
+  if (/relax|chill|slow|spa|wellness|peaceful/.test(requestLower))
+    vibeHints.push("RELAXATION-FOCUSED: Include spa days, slow mornings, parks, and low-intensity activities.");
+  const vibeBlock = vibeHints.length > 0 ? `\nVIBE CONSTRAINTS (apply to ALL cities):\n${vibeHints.join("\n")}\n` : "";
+
   const prompt = `You are Planit, an AI travel planner. Today is ${today}.
-${userContext ? `\n${userContext}\n` : ""}
+${userContext ? `\n${userContext}\n` : ""}${vibeBlock}
 User request: "${request}"
 
 This is a ${numDays}-day trip starting ${startDate} (ending ${endDate}).
@@ -808,7 +1041,7 @@ export async function buildFromSelections(
   selectedIds: string[],
   suggestions: TripSuggestions,
   userContext: string
-): Promise<{ nodes: ItineraryNode[]; conflicts: ActivityConflict[] }> {
+): Promise<{ nodes: ItineraryNode[]; conflicts: ActivityConflict[]; timezone: string }> {
   const genAI = getGenAI();
   // No Google Search — we schedule existing data, don't need to discover new places
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -820,7 +1053,7 @@ export async function buildFromSelections(
   ]);
   const selected = allActivities.filter((a) => selectedIds.includes(a.id));
 
-  if (selected.length === 0) return { nodes: [], conflicts: [] };
+  if (selected.length === 0) return { nodes: [], conflicts: [], timezone: "UTC" };
 
   // ── Detect event conflicts ──────────────────────────────────
   function toMinutes(t: string): number {
@@ -860,22 +1093,52 @@ export async function buildFromSelections(
       }
     }
   }
-  if (conflicts.length > 0) return { nodes: [], conflicts };
+  if (conflicts.length > 0) return { nodes: [], conflicts, timezone: "UTC" };
 
   // ── Compact scheduling prompt (no Search, small output) ─────
-  const { tzOffset } = detectPlanDuration(suggestions.destination);
+  // Use geo-tz with the first selected activity's coordinates for accurate timezone detection.
+  const firstCoords = selected[0]?.location ?? { lat: 0, lng: 0 };
+  const { offset: tzOffset, iana: detectedIANA } = tzFromCoords(
+    firstCoords.lat, firstCoords.lng, suggestions.destination
+  );
   const numDays = Math.ceil(
     (new Date(suggestions.end_date).getTime() - new Date(suggestions.start_date).getTime()) / 86400000
   ) + 1;
   const dateSchedule = buildDateSchedule(suggestions.start_date, numDays, tzOffset);
 
+  // Build a city → allowed dates set for hard enforcement
+  const cityDateMap = new Map<string, { from: string; to: string }>();
+  for (const c of suggestions.cities) {
+    cityDateMap.set(c.city, c.date_range);
+  }
+
+  // Enumerate every allowed date per city so Gemini has zero ambiguity
+  const cityDateRanges = suggestions.cities.map((c) => {
+    const dates: string[] = [];
+    const cur = new Date(c.date_range.from + "T00:00:00");
+    const end = new Date(c.date_range.to + "T00:00:00");
+    while (cur <= end) { dates.push(toDateStr(cur)); cur.setDate(cur.getDate() + 1); }
+    return `  ${c.city} → ONLY on: ${dates.join(", ")}`;
+  }).join("\n");
+
   const activityList = selected
     .map((a, i) => {
+      const city = a.city;
+      const range = cityDateMap.get(city);
+      const allowedDates = range
+        ? (() => {
+            const dates: string[] = [];
+            const cur = new Date(range.from + "T00:00:00");
+            const end = new Date(range.to + "T00:00:00");
+            while (cur <= end) { dates.push(toDateStr(cur)); cur.setDate(cur.getDate() + 1); }
+            return dates.join(", ");
+          })()
+        : "any";
       const fixedTime =
         a.is_event && a.event_date
           ? ` FIXED:${a.event_date}T${a.event_start}`
           : ` dur:${a.duration_minutes}min`;
-      return `${i + 1}. id="${a.id}" city=${a.city} "${a.title}"${fixedTime}`;
+      return `${i + 1}. id="${a.id}" city=${city} allowedDates=[${allowedDates}] "${a.title}"${fixedTime}`;
     })
     .join("\n");
 
@@ -884,14 +1147,21 @@ ${userContext ? `\n${userContext}\n` : ""}
 Activities to schedule (IDs are exact — do NOT change them):
 ${activityList}
 
-Day dates:
+Day dates (use these exact dates):
 ${dateSchedule}
+
+STRICT city-to-date rules — VIOLATION = INVALID OUTPUT:
+${cityDateRanges}
+Each activity above lists its "allowedDates". You MUST pick a date from that list. Any activity scheduled outside its allowedDates is an error.
+
 Timezone: ${tzOffset}
 
 Rules:
 - FIXED events must keep their exact date and start time
-- Non-fixed activities: spread across days in their city, start no earlier than 09:00
-- Between activities on the same day, add a short transport entry
+- NEVER schedule an activity outside its city's allowed dates — this is the #1 rule
+- Distribute activities evenly across the available days for each city (aim for 3–5 per day)
+- Start times no earlier than 09:00, use 2-digit hours (e.g. "09:00" not "9:00")
+- Between consecutive activities on the same day, add a short transport entry
 - If gap between activities is >50min, add one filler (nearby walk/viewpoint/market)
 - Do NOT add meals
 - Keep total output small — compact JSON only
@@ -957,7 +1227,7 @@ Return ONLY valid JSON, no markdown:
     if (!parsed?.schedule?.length) {
       logger.warn("Planner", "buildFromSelections returned no schedule — building fallback from selected activities");
       // Fallback: just use selected activities with placeholder times so the flow doesn't break
-      return { nodes: buildFallbackNodes(selected, suggestions, tzOffset), conflicts: [] };
+      return { nodes: buildFallbackNodes(selected, suggestions, tzOffset), conflicts: [], timezone: detectedIANA };
     }
 
     const createdAt = new Date().toISOString();
@@ -1095,12 +1365,12 @@ Return ONLY valid JSON, no markdown:
 
     logger.success(
       "Planner",
-      `buildFromSelections — ${activityNodes.length} activities + ${fillerNodes.length} fillers + ${transportNodes.length} transport nodes`
+      `buildFromSelections — ${activityNodes.length} activities + ${fillerNodes.length} fillers + ${transportNodes.length} transport nodes (tz: ${detectedIANA})`
     );
-    return { nodes: allNodes, conflicts: [] };
+    return { nodes: allNodes, conflicts: [], timezone: detectedIANA };
   } catch (err) {
     logger.error("Planner", "buildFromSelections failed", (err as Error).message);
-    return { nodes: buildFallbackNodes(selected, suggestions, tzOffset), conflicts: [] };
+    return { nodes: buildFallbackNodes(selected, suggestions, tzOffset), conflicts: [], timezone: detectedIANA };
   }
 }
 
@@ -1155,7 +1425,8 @@ function buildFallbackNodes(
 export async function findFoodPlaces(
   cities: string[],
   dateRange: { start: string; end: string },
-  userContext: string
+  userContext: string,
+  cityDays: Record<string, number> = {}
 ): Promise<{ food: FoodSuggestion[] }> {
   const genAI = getGenAI();
   const model = genAI.getGenerativeModel({
@@ -1164,12 +1435,20 @@ export async function findFoodPlaces(
   });
 
   const today = TODAY();
-  const cityList = cities.join(", ");
+
+  // Scale options per city based on days spent there: days + 3 gives good variety
+  const cityInstructions = cities.map((city) => {
+    const n = cityDays[city] ?? 1;
+    const breakfast = Math.max(3, n + 2);
+    const lunch = Math.max(4, n + 3);
+    const dinner = Math.max(4, n + 3);
+    const snack = Math.max(2, n);
+    return `${city} (${n} day${n !== 1 ? "s" : ""}): ${breakfast} breakfast, ${lunch} lunch, ${dinner} dinner, ${snack} snack/street food`;
+  }).join("\n  ");
 
   const prompt = `You are Planit finding authentic local restaurants. Today is ${today}.
 ${userContext ? `\n${userContext}\n` : ""}
 
-Cities: ${cityList}
 Trip dates: ${dateRange.start} to ${dateRange.end}
 
 AUTHENTICITY RULES (strictly apply all):
@@ -1184,11 +1463,8 @@ Use Google Search:
   - "[city] authentic local restaurants hidden gem [year]"
   - "[city] [meal type] locals actually eat"
 
-For EACH city return:
-  - 3 breakfast spots (variety of local morning culture)
-  - 4 lunch options (quick & sit-down, mix of cuisines)
-  - 4 dinner options (1 budget, 2 mid-range, 1 special occasion)
-  - 2 snack/street food spots
+For EACH city return exactly the number of options below (more days = more variety to pick from):
+  ${cityInstructions}
 
 Return ONLY valid JSON, no markdown:
 {

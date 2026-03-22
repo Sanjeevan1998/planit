@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 
     logger.info("Build", `Building itinerary from ${effectiveIds.length} selected activities`);
 
-    const { nodes, conflicts } = await buildFromSelections(effectiveIds, suggestions, userContext);
+    const { nodes, conflicts, timezone } = await buildFromSelections(effectiveIds, suggestions, userContext);
 
     // Return conflicts for resolution — don't write to DB yet
     if (conflicts.length > 0) {
@@ -103,6 +103,7 @@ export async function POST(req: NextRequest) {
         end_date: suggestions.end_date,
         budget_tier: "mid-range",
         status: "active",
+        timezone,
       })
       .select()
       .single();

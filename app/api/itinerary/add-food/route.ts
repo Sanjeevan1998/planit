@@ -1,17 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
+import { find as geoFind } from "geo-tz";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { ianaToOffset } from "@/lib/langgraph/planner";
 import { logger } from "@/lib/logger";
 import type { FoodSuggestion } from "@/types";
 
 const VALID_BUDGET_TIERS = new Set(["budget", "mid-range", "premium", "luxury"]);
 
-// Pick N breakfasts + N lunches + N dinners per city (N = numDays)
-function autoPickFood(food: FoodSuggestion[], numDays: number): FoodSuggestion[] {
+// Meal time slots: start/end in HH:MM
+const MEAL_SLOTS: Record<string, { start: string; end: string; durationMin: number }> = {
+  breakfast: { start: "07:30", end: "08:30", durationMin: 60 },
+  lunch:     { start: "12:00", end: "13:30", durationMin: 90 },
+  dinner:    { start: "18:30", end: "20:00", durationMin: 90 },
+  snack:     { start: "15:00", end: "15:30", durationMin: 30 },
+};
+
+// Build YYYY-MM-DD string without timezone drift
+function addDays(startDate: string, daysToAdd: number): string {
+  const [y, m, d] = startDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d + daysToAdd);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+
+// Pick N breakfasts + N lunches + N dinners per city (N = days in that city)
+function autoPickFood(food: FoodSuggestion[], cityDays: Record<string, number>): FoodSuggestion[] {
   const cities = [...new Set(food.map((f) => f.city))];
   const picked: FoodSuggestion[] = [];
   for (const city of cities) {
+    const n = cityDays[city] ?? 1;
     const cityFood = food.filter((f) => f.city === city);
-    const byType = (t: string) => cityFood.filter((f) => f.meal_type === t).slice(0, numDays);
+    const byType = (t: string) => cityFood.filter((f) => f.meal_type === t).slice(0, n);
     picked.push(...byType("breakfast"));
     picked.push(...byType("lunch"));
     picked.push(...byType("dinner"));
@@ -22,13 +45,14 @@ function autoPickFood(food: FoodSuggestion[], numDays: number): FoodSuggestion[]
 
 export async function POST(req: NextRequest) {
   try {
-    const { user_id, itinerary_id, selected_food_ids, food_suggestions, ai_pick, num_days } = await req.json() as {
+    const { user_id, itinerary_id, selected_food_ids, food_suggestions, ai_pick, city_days } = await req.json() as {
       user_id: string;
       itinerary_id: string;
       selected_food_ids?: string[];
       food_suggestions: FoodSuggestion[];
       ai_pick?: boolean;
-      num_days?: number;
+      /** Map of city name → number of days spent there */
+      city_days?: Record<string, number>;
     };
 
     if (!user_id || !itinerary_id || !food_suggestions?.length) {
@@ -36,7 +60,7 @@ export async function POST(req: NextRequest) {
     }
 
     const toAdd: FoodSuggestion[] = ai_pick
-      ? autoPickFood(food_suggestions, Math.max(1, num_days ?? 1))
+      ? autoPickFood(food_suggestions, city_days ?? {})
       : food_suggestions.filter((f) => selected_food_ids?.includes(f.id));
 
     if (!toAdd.length) {
@@ -45,35 +69,63 @@ export async function POST(req: NextRequest) {
 
     const supabase = createAdminClient();
 
-    // Convert FoodSuggestion → itinerary_nodes row
-    // start_time is a placeholder — finalizeWithGemini will assign real times
+    // Fetch itinerary to get start_date, end_date, and destination for timezone
+    const { data: itinerary } = await supabase
+      .from("itineraries")
+      .select("start_date, end_date, destination, timezone")
+      .eq("id", itinerary_id)
+      .single();
+
+    const startDate = itinerary?.start_date ?? new Date().toISOString().split("T")[0];
+    // Use stored IANA timezone if available; otherwise geo-lookup from first food suggestion's coords
+    let ianaTimezone = (itinerary?.timezone as string | null) ?? "";
+    if (!ianaTimezone || ianaTimezone === "UTC") {
+      const firstFood = toAdd[0];
+      if (firstFood?.location?.lat && firstFood?.location?.lng) {
+        const zones = geoFind(firstFood.location.lat, firstFood.location.lng);
+        if (zones.length > 0) ianaTimezone = zones[0];
+      }
+    }
+    if (!ianaTimezone) ianaTimezone = "UTC";
+    const tzOffset = ianaToOffset(ianaTimezone);
+
+    // Count how many of each meal_type we've seen, to assign each to a different day
+    const typeCount: Record<string, number> = {};
+
+    // Convert FoodSuggestion → itinerary_nodes row with proper scheduled times
     const now = new Date().toISOString();
-    const mealNodes = toAdd.map((f) => ({
-      itinerary_id,
-      id: crypto.randomUUID(),
-      parent_id: null,
-      branch_label: "A",
-      type: "meal",
-      title: f.title,
-      description: f.description,
-      lat: f.location.lat,
-      lng: f.location.lng,
-      address: f.location.address,
-      start_time: "1970-01-01T00:00:00+00:00",  // placeholder — finalize will schedule
-      end_time: "1970-01-01T01:00:00+00:00",
-      duration_minutes: f.meal_type === "snack" ? 30 : f.meal_type === "breakfast" ? 60 : 90,
-      budget_tier: VALID_BUDGET_TIERS.has(f.budget_tier) ? f.budget_tier : "mid-range",
-      budget_estimate: f.budget_estimate,
-      why_selected: f.why_authentic,
-      tags: [f.meal_type, ...(f.tags ?? [])],
-      accessibility_verified: f.accessibility_verified,
-      accessibility_notes: f.accessibility_notes ?? "",
-      booking_links: JSON.stringify(f.booking_links),
-      transport_options: JSON.stringify([]),
-      is_active: true,
-      is_pivot: false,
-      created_at: now,
-    }));
+    const mealNodes = toAdd.map((f) => {
+      const slot = MEAL_SLOTS[f.meal_type] ?? MEAL_SLOTS.snack;
+      const dayIdx = typeCount[f.meal_type] ?? 0;
+      typeCount[f.meal_type] = dayIdx + 1;
+      const dateStr = addDays(startDate, dayIdx);
+      return {
+        itinerary_id,
+        id: crypto.randomUUID(),
+        parent_id: null,
+        branch_label: "A",
+        type: "meal",
+        title: f.title,
+        description: f.description,
+        lat: f.location.lat,
+        lng: f.location.lng,
+        address: f.location.address,
+        start_time: `${dateStr}T${slot.start}:00${tzOffset}`,
+        end_time: `${dateStr}T${slot.end}:00${tzOffset}`,
+        duration_minutes: slot.durationMin,
+        budget_tier: VALID_BUDGET_TIERS.has(f.budget_tier) ? f.budget_tier : "mid-range",
+        budget_estimate: f.budget_estimate,
+        why_selected: f.why_authentic,
+        tags: [f.meal_type, ...(f.tags ?? [])],
+        accessibility_verified: f.accessibility_verified,
+        accessibility_notes: f.accessibility_notes ?? "",
+        booking_links: JSON.stringify(f.booking_links),
+        transport_options: JSON.stringify([]),
+        is_active: true,
+        is_pivot: false,
+        created_at: now,
+      };
+    });
 
     const { error: insertErr } = await supabase.from("itinerary_nodes").insert(mealNodes);
     if (insertErr) {

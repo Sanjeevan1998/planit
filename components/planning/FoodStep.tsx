@@ -50,6 +50,8 @@ interface FoodPickerProps {
   onToggle: (id: string) => void;
   onConfirm: () => void;
   isAdding: boolean;
+  /** Map of city name → number of days spent there */
+  cityDays?: Record<string, number>;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -370,29 +372,33 @@ export function FoodPicker({
   onToggle,
   onConfirm,
   isAdding,
+  cityDays = {},
 }: FoodPickerProps) {
   // Build city list
   const cities = Array.from(new Set(suggestions.map((s) => s.city)));
   const [activeCity, setActiveCity] = useState(cities[0] ?? "");
 
-  // Track per-(city, meal_type) selections to show warning
+  // Track per-(city, meal_type) over-selection warnings
   const [warnKey, setWarnKey] = useState<string | null>(null);
 
   const selectedCount = selectedIds.size;
+
+  const daysForCity = (city: string) => cityDays[city] ?? 1;
 
   const handleToggle = (id: string) => {
     const item = suggestions.find((s) => s.id === id);
     if (!item) return;
 
     if (!selectedIds.has(id)) {
-      // Selecting — check if already have one in same city + meal_type
+      // Selecting — check if already at the per-day limit for this meal_type in this city
+      const limit = daysForCity(item.city);
       const sameSlot = suggestions.filter(
         (s) =>
           s.city === item.city &&
           s.meal_type === item.meal_type &&
           selectedIds.has(s.id)
       );
-      if (sameSlot.length >= 1) {
+      if (sameSlot.length >= limit) {
         const key = `${item.city}-${item.meal_type}`;
         setWarnKey(key);
         setTimeout(() => setWarnKey(null), 3000);
@@ -424,6 +430,17 @@ export function FoodPicker({
         </div>
       )}
 
+      {/* Per-day hint for active city */}
+      {daysForCity(activeCity) > 1 && (
+        <div className="mx-4 mt-3 flex items-center gap-2 bg-blue-400/8 border border-blue-400/20 rounded-xl px-4 py-2">
+          <span className="text-blue-400 text-xs flex-shrink-0">📅</span>
+          <p className="text-xs text-blue-300/80">
+            You&apos;re in <span className="font-semibold">{activeCity}</span> for{" "}
+            <span className="font-semibold">{daysForCity(activeCity)} days</span> — pick up to {daysForCity(activeCity)} per meal type and we&apos;ll assign one per day.
+          </p>
+        </div>
+      )}
+
       {/* Over-select warning */}
       <AnimatePresence>
         {warnKey && (
@@ -435,9 +452,12 @@ export function FoodPicker({
           >
             <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <p className="text-xs text-amber-300">
-              You already selected a{" "}
-              {warnKey.split("-").slice(1).join(" ")} in{" "}
-              {warnKey.split("-")[0]}. Consider removing the other one.
+              {(() => {
+                const city = warnKey.split("-")[0];
+                const meal = warnKey.split("-").slice(1).join(" ");
+                const limit = daysForCity(city);
+                return `You've picked ${limit} ${meal}${limit !== 1 ? "s" : ""} for ${city} — that covers all ${limit} day${limit !== 1 ? "s" : ""} there.`;
+              })()}
             </p>
           </motion.div>
         )}

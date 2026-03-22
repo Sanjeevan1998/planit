@@ -344,20 +344,26 @@ export function ActivityPicker({
       {/* City tabs */}
       {suggestions.cities.length > 1 && (
         <div className="flex items-center gap-1.5 px-4 pt-3 overflow-x-auto scrollbar-none">
-          {suggestions.cities.map((c) => (
-            <button
-              key={c.city}
-              onClick={() => setActiveCity(c.city)}
-              className={cn(
-                "flex-shrink-0 px-4 py-1.5 rounded-xl text-sm font-medium transition-all duration-200",
-                activeCity === c.city
-                  ? "bg-violet-500/20 text-violet-300 ring-1 ring-violet-500/40"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
-              )}
-            >
-              {c.city}
-            </button>
-          ))}
+          {suggestions.cities.map((c) => {
+            const from = new Date(c.date_range.from + "T00:00:00");
+            const to = new Date(c.date_range.to + "T00:00:00");
+            const days = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
+            return (
+              <button
+                key={c.city}
+                onClick={() => setActiveCity(c.city)}
+                className={cn(
+                  "flex-shrink-0 flex flex-col items-center px-4 py-1.5 rounded-xl text-sm font-medium transition-all duration-200",
+                  activeCity === c.city
+                    ? "bg-violet-500/20 text-violet-300 ring-1 ring-violet-500/40"
+                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
+                )}
+              >
+                <span>{c.city}</span>
+                <span className="text-[10px] opacity-60 font-normal">{days}d · {c.date_range.from.slice(5)}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

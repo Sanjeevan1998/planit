@@ -584,7 +584,9 @@ export function BranchingTimeline({
   className,
 }: BranchingTimelineProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const destIANA = destToIANA(itinerary.destination ?? "");
+  // Prefer the IANA timezone stored on the itinerary (set at creation time).
+  // Fall back to keyword-based lookup for itineraries created before this field existed.
+  const destIANA = itinerary.timezone ?? destToIANA(itinerary.destination ?? "");
 
   const toggleExpand = (nodeId: string) => {
     setExpandedNodes((prev) => {

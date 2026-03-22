@@ -186,6 +186,7 @@ export interface Itinerary {
   budget_tier: BudgetTier;
   budget_total_estimate?: string;
   status: "draft" | "active" | "completed" | "pivoted";
+  timezone?: string; // IANA timezone, e.g. "Asia/Tokyo" — used for correct local-time display
   nodes: ItineraryNode[];
   branches: ItineraryBranch[];
   accessibility_summary?: string;

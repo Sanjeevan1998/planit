@@ -6,10 +6,11 @@ import { logger } from "@/lib/logger";
 
 export async function POST(req: NextRequest) {
   try {
-    const { user_id, cities, date_range } = await req.json() as {
+    const { user_id, cities, date_range, city_days } = await req.json() as {
       user_id: string;
       cities: string[];
       date_range: { start: string; end: string };
+      city_days?: Record<string, number>;
     };
 
     if (!user_id || !cities?.length) {
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
     });
 
     logger.info("Food", `Finding food for cities: ${cities.join(", ")}`);
-    const { food } = await findFoodPlaces(cities, date_range, userContext);
+    const { food } = await findFoodPlaces(cities, date_range, userContext, city_days ?? {});
 
     return NextResponse.json({ food });
   } catch (error) {
