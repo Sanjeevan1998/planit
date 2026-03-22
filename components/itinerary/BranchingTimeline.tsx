@@ -15,6 +15,7 @@ import {
   GitBranch,
   Sparkles,
   AlertTriangle,
+  Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Itinerary, ItineraryNode, BookingLink } from "@/types";
@@ -49,6 +50,139 @@ const BUDGET_COLORS: Record<string, string> = {
   luxury: "text-amber-400 bg-amber-400/10",
 };
 
+// ── Timezone utilities ────────────────────────────────────────
+
+// Map destination city/country keywords → IANA timezone.
+// Keyed by lowercase substrings that appear in itinerary.destination.
+const DEST_TO_IANA: Array<[string, string]> = [
+  ["tokyo", "Asia/Tokyo"],
+  ["japan", "Asia/Tokyo"],
+  ["osaka", "Asia/Tokyo"],
+  ["kyoto", "Asia/Tokyo"],
+  ["london", "Europe/London"],
+  ["uk", "Europe/London"],
+  ["england", "Europe/London"],
+  ["paris", "Europe/Paris"],
+  ["france", "Europe/Paris"],
+  ["berlin", "Europe/Berlin"],
+  ["germany", "Europe/Berlin"],
+  ["rome", "Europe/Rome"],
+  ["italy", "Europe/Rome"],
+  ["madrid", "Europe/Madrid"],
+  ["spain", "Europe/Madrid"],
+  ["amsterdam", "Europe/Amsterdam"],
+  ["new york", "America/New_York"],
+  ["nyc", "America/New_York"],
+  ["boston", "America/New_York"],
+  ["miami", "America/New_York"],
+  ["chicago", "America/Chicago"],
+  ["los angeles", "America/Los_Angeles"],
+  ["seattle", "America/Los_Angeles"],
+  ["san francisco", "America/Los_Angeles"],
+  ["la,", "America/Los_Angeles"],
+  ["denver", "America/Denver"],
+  ["dubai", "Asia/Dubai"],
+  ["uae", "Asia/Dubai"],
+  ["singapore", "Asia/Singapore"],
+  ["bangkok", "Asia/Bangkok"],
+  ["thailand", "Asia/Bangkok"],
+  ["bali", "Asia/Makassar"],
+  ["indonesia", "Asia/Jakarta"],
+  ["sydney", "Australia/Sydney"],
+  ["melbourne", "Australia/Sydney"],
+  ["australia", "Australia/Sydney"],
+  ["auckland", "Pacific/Auckland"],
+  ["new zealand", "Pacific/Auckland"],
+  ["beijing", "Asia/Shanghai"],
+  ["shanghai", "Asia/Shanghai"],
+  ["china", "Asia/Shanghai"],
+  ["hong kong", "Asia/Hong_Kong"],
+  ["seoul", "Asia/Seoul"],
+  ["korea", "Asia/Seoul"],
+  ["mumbai", "Asia/Kolkata"],
+  ["delhi", "Asia/Kolkata"],
+  ["india", "Asia/Kolkata"],
+  ["istanbul", "Europe/Istanbul"],
+  ["turkey", "Europe/Istanbul"],
+  ["cairo", "Africa/Cairo"],
+  ["egypt", "Africa/Cairo"],
+  ["moscow", "Europe/Moscow"],
+  ["russia", "Europe/Moscow"],
+  ["toronto", "America/Toronto"],
+  ["canada", "America/Toronto"],
+  ["vancouver", "America/Vancouver"],
+  ["mexico city", "America/Mexico_City"],
+  ["mexico", "America/Mexico_City"],
+  ["sao paulo", "America/Sao_Paulo"],
+  ["brazil", "America/Sao_Paulo"],
+  ["buenos aires", "America/Argentina/Buenos_Aires"],
+];
+
+// Resolve an IANA timezone from the destination string.
+// Falls back to "UTC" if unrecognized.
+function destToIANA(destination: string): string {
+  const lower = destination.toLowerCase();
+  for (const [key, iana] of DEST_TO_IANA) {
+    if (lower.includes(key)) return iana;
+  }
+  return "UTC";
+}
+
+// Get short timezone abbreviation (JST, EST…) for an IANA timezone at a given instant.
+function getTZAbbr(ianaTimezone: string, date: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZoneName: "short",
+      timeZone: ianaTimezone,
+    }).formatToParts(date);
+    return parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// Format a UTC instant in the given IANA timezone.
+function formatInTZ(date: Date, ianaTimezone: string): string {
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: ianaTimezone,
+  });
+}
+
+// Return { time, tzAbbr } for a node's start_time displayed in the destination's timezone.
+function buildTimeDisplay(iso: string, destIANA: string): { time: string; tzAbbr: string } {
+  const date = new Date(iso);
+  return {
+    time: formatInTZ(date, destIANA),
+    tzAbbr: getTZAbbr(destIANA, date),
+  };
+}
+
+// ── Extract date string (YYYY-MM-DD) from ISO string ─────────
+function parseISODate(iso: string): string {
+  if (!iso) return "";
+  return iso.split("T")[0];
+}
+
+// ── Format a date string for display ─────────────────────────
+function formatDayHeader(dateStr: string, dayIndex: number): string {
+  if (!dateStr) return `Day ${dayIndex + 1}`;
+  try {
+    // Parse as UTC date (split to avoid DST shifts)
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    return date.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return `Day ${dayIndex + 1}`;
+  }
+}
+
 function BookingLinkChip({ link }: { link: BookingLink }) {
   return (
     <a
@@ -70,6 +204,7 @@ function NodeCard({
   onSelect,
   onExpand,
   isExpanded,
+  destIANA,
 }: {
   node: ItineraryNode;
   isActive: boolean;
@@ -77,14 +212,9 @@ function NodeCard({
   onSelect?: () => void;
   onExpand?: () => void;
   isExpanded: boolean;
+  destIANA: string;
 }) {
-  const startTime = node.start_time
-    ? new Date(node.start_time).toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      })
-    : null;
+  const timeDisplay = node.start_time ? buildTimeDisplay(node.start_time, destIANA) : null;
 
   return (
     <motion.div
@@ -147,10 +277,14 @@ function NodeCard({
 
             {/* Meta row */}
             <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-zinc-500">
-              {startTime && (
+              {timeDisplay && (
                 <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {startTime} · {node.duration_minutes}min
+                  <Clock className="w-3 h-3 shrink-0" />
+                  {timeDisplay.time}
+                  {timeDisplay.tzAbbr && (
+                    <span className="text-zinc-600">{timeDisplay.tzAbbr}</span>
+                  )}
+                  <span className="text-zinc-600">· {node.duration_minutes}min</span>
                 </span>
               )}
               {node.location?.address && (
@@ -271,6 +405,7 @@ export function BranchingTimeline({
   className,
 }: BranchingTimelineProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const destIANA = destToIANA(itinerary.destination ?? "");
 
   const toggleExpand = (nodeId: string) => {
     setExpandedNodes((prev) => {
@@ -281,10 +416,8 @@ export function BranchingTimeline({
     });
   };
 
-  // Group nodes: primary path (branch_label "A" or null) + alternatives
-  const rootNodes = itinerary.nodes?.filter((n) => !n.parent_id) || [];
+  // Build child map for branch alternatives
   const childMap = new Map<string, ItineraryNode[]>();
-
   itinerary.nodes?.forEach((n) => {
     if (n.parent_id) {
       const children = childMap.get(n.parent_id) || [];
@@ -292,6 +425,26 @@ export function BranchingTimeline({
       childMap.set(n.parent_id, children);
     }
   });
+
+  // Root nodes = no parent — sorted chronologically by start_time
+  const rootNodes = (itinerary.nodes?.filter((n) => !n.parent_id) || []).sort(
+    (a, b) => {
+      const ta = a.start_time ? parseISODate(a.start_time) + a.start_time.slice(11, 16) : "";
+      const tb = b.start_time ? parseISODate(b.start_time) + b.start_time.slice(11, 16) : "";
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    }
+  );
+
+  // Group root nodes by date for multi-day display
+  const dateGroups = new Map<string, ItineraryNode[]>();
+  for (const node of rootNodes) {
+    const dateKey = parseISODate(node.start_time) || "unknown";
+    const group = dateGroups.get(dateKey) || [];
+    group.push(node);
+    dateGroups.set(dateKey, group);
+  }
+  const sortedDates = Array.from(dateGroups.keys()).sort();
+  const isMultiDay = sortedDates.length > 1;
 
   if (!rootNodes.length) {
     return (
@@ -312,54 +465,77 @@ export function BranchingTimeline({
         <span className="text-xs text-zinc-500">{itinerary.destination}</span>
       </div>
 
-      {rootNodes.map((node, index) => {
-        const alternatives = childMap.get(node.id) || [];
-        const isActive = node.is_active;
+      {sortedDates.map((dateKey, dayIndex) => {
+        const dayNodes = dateGroups.get(dateKey)!;
+        const dayLabel = formatDayHeader(dateKey, dayIndex);
 
         return (
-          <div key={node.id} className="relative">
-            {/* Vertical connector line */}
-            {index < rootNodes.length - 1 && (
-              <div className="absolute left-7 top-full w-0.5 h-3 bg-zinc-800 z-10" />
-            )}
-
-            {/* Primary node */}
-            <NodeCard
-              node={node}
-              isActive={isActive}
-              isExpanded={expandedNodes.has(node.id)}
-              onSelect={() => onNodeSelect?.(node.id)}
-              onExpand={() => toggleExpand(node.id)}
-            />
-
-            {/* Branch alternatives */}
-            {alternatives.length > 0 && (
-              <div className="ml-6 mt-2 space-y-2 relative">
-                {/* Branch line */}
-                <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-zinc-800/60 rounded-full" />
-
-                <div className="flex items-center gap-1.5 pl-3 mb-1">
-                  <GitBranch className="w-3 h-3 text-zinc-600" />
-                  <span className="text-xs text-zinc-600">Alternatives</span>
-                </div>
-
-                {alternatives.map((alt) => (
-                  <div key={alt.id} className="pl-3">
-                    <NodeCard
-                      node={alt}
-                      isActive={alt.is_active}
-                      isAlternative
-                      isExpanded={expandedNodes.has(alt.id)}
-                      onSelect={() => {
-                        onNodeSelect?.(alt.id);
-                        onBranchSwitch?.(node.id, alt.branch_label || "B");
-                      }}
-                      onExpand={() => toggleExpand(alt.id)}
-                    />
-                  </div>
-                ))}
+          <div key={dateKey} className="space-y-1">
+            {/* Day header — only shown for multi-day itineraries */}
+            {isMultiDay && (
+              <div className="flex items-center gap-2 py-2 px-1 mt-4 first:mt-0">
+                <Calendar className="w-3.5 h-3.5 text-violet-400/70" />
+                <span className="text-xs font-semibold text-violet-400/80 uppercase tracking-wider">
+                  Day {dayIndex + 1} · {dayLabel}
+                </span>
+                <div className="flex-1 h-px bg-zinc-800/60" />
               </div>
             )}
+
+            {dayNodes.map((node, index) => {
+              const alternatives = childMap.get(node.id) || [];
+              const isActive = node.is_active;
+              const isLastInDay = index === dayNodes.length - 1;
+
+              return (
+                <div key={node.id} className="relative">
+                  {/* Vertical connector line between activities */}
+                  {!isLastInDay && (
+                    <div className="absolute left-7 top-full w-0.5 h-3 bg-zinc-800 z-10" />
+                  )}
+
+                  {/* Primary node */}
+                  <NodeCard
+                    node={node}
+                    isActive={isActive}
+                    isExpanded={expandedNodes.has(node.id)}
+                    onSelect={() => onNodeSelect?.(node.id)}
+                    onExpand={() => toggleExpand(node.id)}
+                    destIANA={destIANA}
+                  />
+
+                  {/* Branch alternatives */}
+                  {alternatives.length > 0 && (
+                    <div className="ml-6 mt-2 space-y-2 relative">
+                      {/* Branch line */}
+                      <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-zinc-800/60 rounded-full" />
+
+                      <div className="flex items-center gap-1.5 pl-3 mb-1">
+                        <GitBranch className="w-3 h-3 text-zinc-600" />
+                        <span className="text-xs text-zinc-600">Alternatives</span>
+                      </div>
+
+                      {alternatives.map((alt) => (
+                        <div key={alt.id} className="pl-3">
+                          <NodeCard
+                            node={alt}
+                            isActive={alt.is_active}
+                            isAlternative
+                            isExpanded={expandedNodes.has(alt.id)}
+                            onSelect={() => {
+                              onNodeSelect?.(alt.id);
+                              onBranchSwitch?.(node.id, alt.branch_label || "B");
+                            }}
+                            onExpand={() => toggleExpand(alt.id)}
+                            destIANA={destIANA}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         );
       })}

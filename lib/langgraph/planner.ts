@@ -23,11 +23,94 @@ const TODAY = () =>
     day: "numeric",
   });
 
+// Return the next occurrence of a weekday (0=Sun…6=Sat), or today if it matches.
+function nextWeekday(targetDay: number): Date {
+  const now = new Date();
+  const diff = (targetDay - now.getDay() + 7) % 7;
+  const d = new Date(now);
+  d.setDate(now.getDate() + (diff === 0 ? 0 : diff));
+  return d;
+}
+
+// Format a Date as YYYY-MM-DD
+function toDateStr(d: Date): string {
+  return d.toISOString().split("T")[0];
+}
+
+// Detect how many days the user is planning and what start date to use.
+// Returns { numDays, startDate } where startDate is YYYY-MM-DD.
+function detectPlanDuration(request: string): { numDays: number; startDate: string; tzOffset: string } {
+  const text = request.toLowerCase();
+
+  // Detect number of days: "3 day", "3-day", "three day"
+  const dayMatch = text.match(/(\d+)\s*[-\s]?day/);
+  const wordDays: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, week: 7, weekend: 2 };
+  let numDays = dayMatch ? parseInt(dayMatch[1]) : 1;
+  for (const [word, n] of Object.entries(wordDays)) {
+    if (text.includes(word + " day") || text.includes(word + "-day") || (word === "weekend" && text.includes("weekend"))) {
+      numDays = n;
+      break;
+    }
+  }
+  numDays = Math.min(Math.max(numDays, 1), 7); // clamp 1–7
+
+  // Detect start date from day-of-week mentions
+  let startDate = toDateStr(new Date()); // default: today
+  const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  for (let i = 0; i < weekdays.length; i++) {
+    if (text.includes(weekdays[i])) {
+      startDate = toDateStr(nextWeekday(i));
+      break;
+    }
+  }
+  if (text.includes("tomorrow")) {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    startDate = toDateStr(tomorrow);
+  }
+  if (text.includes("this weekend") || text.includes("weekend")) {
+    startDate = toDateStr(nextWeekday(6)); // Saturday
+    if (numDays === 1) numDays = 2;
+  }
+  if (text.includes("next week")) {
+    const nextMon = new Date();
+    nextMon.setDate(nextMon.getDate() + ((8 - nextMon.getDay()) % 7 || 7));
+    startDate = toDateStr(nextMon);
+    if (numDays === 1) numDays = 5;
+  }
+
+  // Detect timezone from destination keywords (expand as needed)
+  const tzOffset = text.includes("tokyo") || text.includes("japan") ? "+09:00"
+    : text.includes("london") || text.includes("uk") ? "+01:00"
+    : text.includes("new york") || text.includes("nyc") ? "-04:00"
+    : text.includes("paris") || text.includes("france") ? "+02:00"
+    : text.includes("los angeles") || text.includes("la ") ? "-07:00"
+    : text.includes("sydney") || text.includes("australia") ? "+10:00"
+    : text.includes("dubai") ? "+04:00"
+    : text.includes("singapore") || text.includes("bangkok") ? "+08:00"
+    : "+09:00"; // default to JST
+
+  return { numDays, startDate, tzOffset };
+}
+
+// Build example date sequence for the prompt
+function buildDateSchedule(startDate: string, numDays: number, tzOffset: string): string {
+  const lines: string[] = [];
+  for (let d = 0; d < numDays; d++) {
+    const [y, m, day] = startDate.split("-").map(Number);
+    const date = new Date(y, m - 1, day + d);
+    const dateStr = toDateStr(date);
+    const label = date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    lines.push(`Day ${d + 1} (${label}): use date ${dateStr} for all nodes on this day`);
+  }
+  return lines.join("\n");
+}
+
 // ── Intent detection (keyword-based, no LLM call needed) ────
 export function detectIntent(input: string): PlanitStateType["intent"] {
   const text = input.toLowerCase();
 
-  if (/plan|itinerary|schedule|what.*do|show.*saturday|show.*sunday|show.*day/.test(text))
+  if (/plan|itinerary|schedule|what.*do|show.*saturday|show.*sunday|show.*day|\d+\s*[-\s]?day|make.*day|weekend trip|week.*trip/.test(text))
     return "plan_day";
   if (/how.*get|commute|transit|train|bus|uber|route|directions/.test(text))
     return "get_commute";
@@ -97,40 +180,54 @@ export async function planWithGemini(
     tools: [{ googleSearch: {} }] as never[], // native Google Search grounding (type suppressed — runtime supported)
   });
 
+  const { numDays, startDate, tzOffset } = detectPlanDuration(request);
+  const dateSchedule = buildDateSchedule(startDate, numDays, tzOffset);
+  const dayWord = numDays === 1 ? "day" : `${numDays}-day`;
+
   const prompt = `You are Planit, an AI travel planner. Today is ${today}.
 
 ${userContext}
 
 User request: "${request}"
 
+This is a ${dayWord} itinerary. Plan dates:
+${dateSchedule}
+
+Timezone offset for all times: ${tzOffset}
+
 Search Google for real current events, attractions, and venues matching this request.
-Then create a detailed day itinerary as a JSON object.
+Then create a detailed itinerary as a JSON object.
 
 RULES:
-- Generate 4–6 main activities (nodes with branch_label "A")
-- For each main activity, add 1–2 alternative branches (branch_label "B", "C")
+- For EACH day: generate 4–6 main activities (nodes with branch_label "A", parent_id null)
+- For each main activity, add 1–2 alternative branches (branch_label "B" or "C", parent_id = the main activity's id)
 - Every node MUST have real booking_links (Booking.com, Google Maps, Uber, Viator, etc.)
 - Every node MUST have a why_selected field explaining why it fits the user
 - Respect ALL accessibility needs and allergies — this is critical
-- Include real addresses and approximate lat/lng for Tokyo
-- Spread activities across the day (morning → afternoon → evening)
+- Include real addresses and accurate lat/lng coordinates for each location
+- Times MUST be realistic (activities start between 08:00 and 22:00 local time)
+- Spread activities across the day: morning (09:00–12:00), afternoon (12:00–17:00), evening (17:00–21:00)
+- Each activity must not overlap with the next (add travel time between them)
+- Include at least one meal node (type: "meal") per day
+- For multi-day itineraries: use DIFFERENT dates per day as listed above; spread theme across days (e.g. Day 1 = culture, Day 2 = food/markets, Day 3 = nature/parks)
+- Alternative nodes (branch_label "B"/"C") must use the SAME date and time slot as their parent
 
-Return ONLY this JSON structure, no other text:
+Return ONLY valid JSON, no markdown fences, no other text:
 {
-  "title": "Day trip title",
+  "title": "Itinerary title",
   "destination": "City name",
   "budget_tier": "mid-range",
   "nodes": [
     {
-      "id": "node_1",
+      "id": "day1_node1",
       "parent_id": null,
       "branch_label": "A",
       "type": "activity",
       "title": "Place name",
       "description": "2–3 sentence description",
       "location": { "lat": 35.6762, "lng": 139.6503, "address": "Full address" },
-      "start_time": "2026-03-29T09:00:00+09:00",
-      "end_time": "2026-03-29T11:00:00+09:00",
+      "start_time": "${startDate}T09:00:00${tzOffset}",
+      "end_time": "${startDate}T11:00:00${tzOffset}",
       "duration_minutes": 120,
       "budget_tier": "mid-range",
       "budget_estimate": "¥1,000",
@@ -139,21 +236,21 @@ Return ONLY this JSON structure, no other text:
       "accessibility_verified": true,
       "accessibility_notes": "Step-free entrance, elevator on left",
       "booking_links": [
-        { "platform": "Google Maps", "url": "https://maps.google.com/?q=...", "label": "View on Google Maps", "category": "activity" }
+        { "platform": "Google Maps", "url": "https://maps.google.com/?q=Place+Name", "label": "View on Google Maps", "category": "activity" }
       ],
       "is_active": true,
       "is_pivot": false
     },
     {
-      "id": "node_1_b",
-      "parent_id": "node_1",
+      "id": "day1_node1_b",
+      "parent_id": "day1_node1",
       "branch_label": "B",
       "type": "activity",
       "title": "Alternative place",
       "description": "...",
       "location": { "lat": 35.6800, "lng": 139.7000, "address": "..." },
-      "start_time": "2026-03-29T09:00:00+09:00",
-      "end_time": "2026-03-29T11:00:00+09:00",
+      "start_time": "${startDate}T09:00:00${tzOffset}",
+      "end_time": "${startDate}T11:00:00${tzOffset}",
       "duration_minutes": 120,
       "budget_tier": "premium",
       "budget_estimate": "¥5,000",
@@ -162,7 +259,7 @@ Return ONLY this JSON structure, no other text:
       "accessibility_verified": true,
       "accessibility_notes": "",
       "booking_links": [
-        { "platform": "Viator", "url": "https://www.viator.com/searchResults/all?text=tokyo", "label": "Book on Viator", "category": "activity" }
+        { "platform": "Viator", "url": "https://www.viator.com/searchResults/all?text=destination", "label": "Book on Viator", "category": "activity" }
       ],
       "is_active": false,
       "is_pivot": false
@@ -187,11 +284,16 @@ Return ONLY this JSON structure, no other text:
     const nodes = (data.nodes as ItineraryNode[]) || [];
     logger.success("Planner", `Parsed itinerary — ${nodes.length} nodes`);
 
+    const mainNodes = nodes.filter((n) => !n.parent_id);
+    // Count unique days
+    const uniqueDays = new Set(mainNodes.map((n) => n.start_time?.split("T")[0]).filter(Boolean)).size;
+    const dayLabel = uniqueDays > 1 ? `${uniqueDays}-day itinerary` : "day";
+
     return {
       itinerary: data as Partial<Itinerary>,
       response:
         nodes.length > 0
-          ? `I've planned your day! ${nodes.filter((n) => !n.parent_id).length} activities lined up with alternatives for each. Check the timeline on the right.`
+          ? `I've planned your ${dayLabel}! ${mainNodes.length} activities across ${uniqueDays > 1 ? `${uniqueDays} days` : "the day"} with alternatives for each. Check the timeline on the right.`
           : "",
     };
   } catch (err) {

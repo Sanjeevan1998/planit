@@ -77,6 +77,17 @@ await test("POST /api/chat — plan a day in Tokyo", async () => {
 
   if (data.itinerary_update?.nodes?.length) {
     ok(`Itinerary nodes: ${data.itinerary_update.nodes.length}`);
+    // Verify times are in correct format (08:00–22:00, not midnight/3AM)
+    const nodes = data.itinerary_update.nodes.filter(n => !n.parent_id);
+    const badTimes = nodes.filter(n => {
+      if (!n.start_time) return false;
+      const match = n.start_time.match(/T(\d{2}):/);
+      if (!match) return false;
+      const h = parseInt(match[1]);
+      return h < 7 || h >= 23; // flag times outside 7AM–11PM
+    });
+    if (badTimes.length === 0) ok("All activity times are in daytime hours (7AM–11PM)");
+    else fail("Some activities scheduled at odd hours", badTimes.map(n => `${n.title}: ${n.start_time}`).join(", "));
   } else {
     fail("No itinerary nodes returned", JSON.stringify(data).slice(0, 200));
   }
@@ -105,13 +116,14 @@ await test("GET /api/memory — fetch all memories", async () => {
 });
 
 // ── 6. Itinerary API — fetch active itinerary ───────────────
-await test("GET /api/itinerary — fetch active itinerary", async () => {
+await test("GET /api/itinerary — fetch active itinerary with nodes", async () => {
   const { status, data } = await get(`/api/itinerary?user_id=${DEMO_USER}`);
-  // 404 is OK (no itinerary created yet), 200 is better
   if (status === 200) {
-    ok(`Itinerary: "${data.title}" — ${data.nodes?.length ?? 0} nodes`);
+    const nodeCount = data.nodes?.length ?? 0;
+    ok(`Itinerary: "${data.title}" — ${nodeCount} nodes`);
+    if (nodeCount === 0) fail("Nodes not persisted to DB", "Expected nodes after planning");
   } else if (status === 404) {
-    ok("No active itinerary (expected before planning)");
+    fail("No itinerary found", "Run planning test first");
   } else {
     fail("Unexpected status", `${status} — ${JSON.stringify(data)}`);
   }
