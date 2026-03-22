@@ -5,6 +5,7 @@ import { Check, Sparkles } from 'lucide-react';
 import type { KawaiiActivity } from '@/types/kawaii';
 import { useTripStore } from '@/stores/useTripStore';
 import { useState } from 'react';
+import PlaceImage from './PlaceImage';
 
 const budgetColors: Record<string, string> = {
   free: 'hsl(153 62% 83%)',
@@ -39,8 +40,6 @@ const ActivitySuggestionCard = ({ activity }: { activity: KawaiiActivity }) => {
     toggleActivitySelection(activity.id);
   };
 
-  const isRealImage = activity.image_url?.startsWith('http');
-
   return (
     <motion.div
       className="glass-card glass-card-hover cursor-pointer relative overflow-hidden"
@@ -57,14 +56,15 @@ const ActivitySuggestionCard = ({ activity }: { activity: KawaiiActivity }) => {
       transition={spring}
       style={{ border: '2px solid', borderRadius: '20px' }}
     >
-      {isRealImage ? (
-        <div className="relative w-full h-36 overflow-hidden" style={{ borderRadius: '18px 18px 0 0' }}>
-          <img src={activity.image_url} alt={activity.title} className="w-full h-full object-cover" loading="lazy" />
-          <div className="absolute inset-0 bg-gradient-to-t from-white/60 to-transparent" />
-        </div>
-      ) : activity.image_url ? (
-        <div className="text-4xl pt-4 px-4">{activity.image_url}</div>
-      ) : null}
+      <div className="relative w-full h-36 overflow-hidden" style={{ borderRadius: '18px 18px 0 0' }}>
+        <PlaceImage
+          provided={activity.image_url}
+          query={`${activity.title} travel`}
+          alt={activity.title}
+          type={activity.type}
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-white/60 to-transparent pointer-events-none" />
+      </div>
 
       <AnimatePresence>
         {showParticles && Array.from({ length: 8 }).map((_, i) => {

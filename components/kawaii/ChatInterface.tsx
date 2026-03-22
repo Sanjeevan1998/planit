@@ -13,6 +13,7 @@ import ItineraryDashboard from './ItineraryDashboard';
 import ConflictResolutionModal from './ConflictResolutionModal';
 import FoodDiscoveryView from './FoodDiscoveryView';
 import PivotAlertBanner from './PivotAlertBanner';
+import LandingView from './LandingView';
 
 const spring = { type: 'spring' as const, stiffness: 300, damping: 28 };
 
@@ -32,6 +33,7 @@ const ChatInterface = () => {
   const [input, setInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [showConflict, setShowConflict] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasGreeted = useRef(false);
 
@@ -110,6 +112,16 @@ const ChatInterface = () => {
         )}
         <ActivitySelectionView suggestions={suggestions} />
       </>
+    );
+  }
+
+  // Landing screen
+  if (showLanding) {
+    return (
+      <LandingView
+        userName={profile?.name}
+        onStart={() => setShowLanding(false)}
+      />
     );
   }
 

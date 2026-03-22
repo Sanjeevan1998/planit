@@ -65,7 +65,7 @@ function adaptNode(n: ItineraryNode): KawaiiItineraryNode {
       mode: t.mode,
       duration: `${t.duration_minutes} min`,
       cost: t.cost_estimate ?? '',
-      notes: t.accessibility_note,
+      notes: t.label ?? t.accessibility_note ?? '',
     })),
     links: (n.booking_links ?? []).map((bl) => ({ label: bl.label, url: bl.url })),
   };
@@ -217,7 +217,8 @@ export async function buildItinerary(
     end_date: suggestions.end_date,
     cities: suggestions.cities.map((c) => ({
       city: c.city,
-      date_range: { from: '', to: '' },
+      // c.date_range is "YYYY-MM-DD – YYYY-MM-DD"; split it back for the planner
+      date_range: { from: (c.date_range ?? '').split(' – ')[0]?.trim() ?? '', to: (c.date_range ?? '').split(' – ')[1]?.trim() ?? '' },
       activities: c.activities.map((a) => ({
         id: a.id,
         city: c.city,

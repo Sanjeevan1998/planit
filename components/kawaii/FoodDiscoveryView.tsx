@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { UtensilsCrossed, Check, ArrowRight, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import type { KawaiiFood } from '@/types/kawaii';
+import PlaceImage from './PlaceImage';
 import { useTripStore } from '@/stores/useTripStore';
 import { useUserStore } from '@/stores/useUserStore';
 import { addFoodToItinerary } from '@/services/api';
@@ -23,8 +24,6 @@ const budgetColors: Record<string, string> = {
 const FoodCard = ({ item }: { item: KawaiiFood }) => {
   const { selectedFoodIds, toggleFoodSelection } = useTripStore();
   const selected = selectedFoodIds.includes(item.id);
-  const isImage = item.image_url?.startsWith('http');
-
   return (
     <motion.div
       className="glass-card glass-card-hover cursor-pointer overflow-hidden relative"
@@ -36,11 +35,14 @@ const FoodCard = ({ item }: { item: KawaiiFood }) => {
       }}
       whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} transition={spring}
     >
-      {isImage && (
-        <div className="w-full h-32 overflow-hidden" style={{ borderRadius: '18px 18px 0 0' }}>
-          <img src={item.image_url} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
-        </div>
-      )}
+      <div className="w-full h-32 overflow-hidden" style={{ borderRadius: '18px 18px 0 0' }}>
+        <PlaceImage
+          provided={item.image_url}
+          query={`${item.title} ${item.cuisine} food`}
+          alt={item.title}
+          type="food"
+        />
+      </div>
       <AnimatePresence>
         {selected && (
           <motion.div

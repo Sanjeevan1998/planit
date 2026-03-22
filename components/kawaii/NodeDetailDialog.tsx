@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, MapPin, Clock, ExternalLink, Sparkles, Train, Car } from 'lucide-react';
 import type { KawaiiItineraryNode } from '@/types/kawaii';
+import PlaceImage from './PlaceImage';
 
 const typeColors: Record<string, string> = {
   activity: 'hsl(var(--lavender))',
@@ -41,12 +42,15 @@ const NodeDetailDialog = ({ node, onClose }: Props) => {
             transition={spring}
           >
             <div className="glass-card overflow-hidden max-h-[80vh] overflow-y-auto" style={{ borderRadius: '24px' }}>
-              {node.image_url?.startsWith('http') && (
-                <div className="relative w-full h-52 overflow-hidden">
-                  <img src={node.image_url} alt={node.title} className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/80 via-transparent to-transparent" />
-                </div>
-              )}
+              <div className="relative w-full h-52 overflow-hidden">
+                <PlaceImage
+                  provided={node.image_url}
+                  query={`${node.title} ${node.type}`}
+                  alt={node.title}
+                  type={node.type}
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-white/80 via-transparent to-transparent pointer-events-none" />
+              </div>
               <motion.button
                 onClick={onClose}
                 className="absolute top-3 right-3 w-8 h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center z-10"
@@ -80,13 +84,19 @@ const NodeDetailDialog = ({ node, onClose }: Props) => {
                   <div className="space-y-2">
                     <p className="text-xs font-bold font-heading text-muted-foreground">Getting here</p>
                     {node.transport_options.map((t, i) => {
-                      const ModeIcon = t.mode.toLowerCase().includes('taxi') || t.mode.toLowerCase().includes('car') ? Car : Train;
+                      const m = t.mode.toLowerCase();
+                      const ModeIcon = m.includes('walk') || m.includes('foot') ? Train : m.includes('taxi') || m.includes('car') ? Car : Train;
                       return (
-                        <div key={i} className="flex items-center gap-3 text-xs font-body bg-muted/40 rounded-lg px-3 py-2">
-                          <ModeIcon className="w-4 h-4 text-muted-foreground" />
-                          <span className="font-semibold">{t.mode}</span>
-                          <span className="text-muted-foreground">{t.duration}</span>
-                          <span className="ml-auto font-bold">{t.cost}</span>
+                        <div key={i} className="flex items-start gap-3 text-xs font-body bg-muted/40 rounded-lg px-3 py-2.5">
+                          <ModeIcon className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <span className="font-semibold capitalize">{t.mode}</span>
+                            {t.notes && <p className="text-muted-foreground mt-0.5 leading-tight">{t.notes}</p>}
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            <p className="font-bold">{t.cost}</p>
+                            <p className="text-muted-foreground">{t.duration}</p>
+                          </div>
                         </div>
                       );
                     })}

@@ -85,6 +85,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not schedule activities — try selecting fewer or different activities" }, { status: 500 });
     }
 
+    // Ensure user profile row exists (FK required by itineraries table)
+    await supabase
+      .from("user_profiles")
+      .upsert({ id: user_id, email: `${user_id}@planit.local` }, { onConflict: "id", ignoreDuplicates: true });
+
     // Deactivate any existing active itinerary for this user
     await supabase
       .from("itineraries")

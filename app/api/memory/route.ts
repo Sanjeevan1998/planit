@@ -31,6 +31,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "user_id required" }, { status: 400 });
     }
 
+    // Ensure user_profiles row exists (other tables FK to it)
+    const supabase = createAdminClient();
+    await supabase
+      .from("user_profiles")
+      .upsert({ id: user_id, email: `${user_id}@planit.local` }, { onConflict: "id", ignoreDuplicates: true });
+
     if (memories?.length) {
       await storeBatchMemories(user_id, memories);
       return NextResponse.json({ success: true, count: memories.length });
